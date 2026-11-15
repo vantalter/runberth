@@ -1,0 +1,38 @@
+name: CI
+
+# GitHub-hosted runners: this repository is public, and a self-hosted runner
+# must never run workflows from pull requests that anyone can open.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+  minimum-rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test on the minimum supported Rust
+        run: |
+          rustup toolchain install 1.87 --profile minimal
+          cargo +1.87 test --locked
