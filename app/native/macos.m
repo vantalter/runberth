@@ -126,7 +126,51 @@ static NSGridView *form(NSArray *rows) {
     return grid;
 }
 
-static NSTabViewItem *pane(NSString *title, NSString *symbol, NSView *content) {
+static NSString *const DonateURL = @"https://ko-fi.com/vantalter";
+
+static NSImage *symbol(NSString *name, NSString *description) {
+    return [NSImage imageWithSystemSymbolName:name accessibilityDescription:description];
+}
+
+/* A cup with a heart, in the outline style of the other tab symbols. */
+static NSImage *donateIcon(void) {
+    NSImage *icon = [NSImage
+         imageWithSize:NSMakeSize(22, 20)
+               flipped:NO
+        drawingHandler:^BOOL(NSRect rect) {
+          (void)rect;
+          [NSColor.blackColor set];
+          NSBezierPath *handle = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(13.5, 7, 6.5, 7.5)
+                                                                 xRadius:3.25
+                                                                 yRadius:3.25];
+          handle.lineWidth = 1.5;
+          [handle stroke];
+          NSRect cup = NSMakeRect(2.5, 3.5, 13.5, 12.5);
+          NSBezierPath *body = [NSBezierPath bezierPathWithRoundedRect:cup xRadius:4 yRadius:4];
+          // Clear the handle's inner half so it joins the cup's outline.
+          NSGraphicsContext.currentContext.compositingOperation = NSCompositingOperationClear;
+          [body fill];
+          NSGraphicsContext.currentContext.compositingOperation = NSCompositingOperationSourceOver;
+          body.lineWidth = 1.5;
+          [body stroke];
+          // Two lobes and a point, filled separately so their overlap stays solid.
+          CGFloat x = NSMidX(cup), y = NSMidY(cup) + 0.4, r = 2;
+          [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x - 1.6 - r, y + 0.6 - r, 2 * r, 2 * r)] fill];
+          [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(x + 1.6 - r, y + 0.6 - r, 2 * r, 2 * r)] fill];
+          NSBezierPath *point = [NSBezierPath bezierPath];
+          [point moveToPoint:NSMakePoint(x - 3.45, y - 0.1)];
+          [point lineToPoint:NSMakePoint(x + 3.45, y - 0.1)];
+          [point lineToPoint:NSMakePoint(x, y - 3.9)];
+          [point closePath];
+          [point fill];
+          return YES;
+        }];
+    icon.template = YES;
+    icon.accessibilityDescription = @"Donate";
+    return icon;
+}
+
+static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content) {
     NSViewController *controller = [[NSViewController alloc] init];
     controller.title = title;
     NSView *view = [[NSView alloc] init];
@@ -143,7 +187,7 @@ static NSTabViewItem *pane(NSString *title, NSString *symbol, NSView *content) {
     [view layoutSubtreeIfNeeded];
     controller.preferredContentSize = view.fittingSize;
     NSTabViewItem *item = [NSTabViewItem tabViewItemWithViewController:controller];
-    item.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:title];
+    item.image = image;
     return item;
 }
 
@@ -161,6 +205,10 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSSecureTextField *token;
 @property NSPopUpButton *notifications;
 @property NSButton *loginBox, *updatesBox, *checkNow;
+@property NSPopUpButton *checkInterval;
+@property NSTextField *lastChecked;
+/* The rows that only Sparkle can fill: the check interval and last check. */
+@property NSArray<NSGridRow *> *sparkleRows;
 @property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version;
 @property NSArray<NSTextField *> *errorLabels;
 @property NSTimer *saveTimer;
@@ -234,29 +282,114 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.loginBox = [NSButton checkboxWithTitle:@"Launch at Login" target:self action:@selector(toggleLogin:)];
     self.loginNote = noteLabel();
     self.loginNote.hidden = YES;
-    self.updatesBox = [NSButton checkboxWithTitle:@"Check for updates automatically"
-                                           target:self
-                                           action:@selector(changed:)];
-    self.checkNow = pushButton(@"Check Now…", self, @selector(checkNow:));
-    self.version = [NSTextField labelWithString:@""];
     NSTextField *error = [self errorLabel];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
     return form(@[
         @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
         @[ @"Notifications:", self.notifications ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
-        @[ @"Updates:", column(@[ self.updatesBox, self.checkNow ]) ],
         NSNull.null,
-        @[ @"Version:", self.version ],
         @[ @"Settings file:", pushButton(@"Open settings.json", self, @selector(openFile:)) ],
     ]);
+}
+- (id)updater {
+    return [tray.updaterController valueForKey:@"updater"];
+}
+- (NSView *)updates {
+    self.updatesBox = [NSButton checkboxWithTitle:@"Automatically check for updates"
+                                           target:self
+                                           action:@selector(changed:)];
+    self.checkInterval = [[NSPopUpButton alloc] init];
+    for (NSArray *choice in @[ @[ @"Daily", @86400 ], @[ @"Weekly", @604800 ], @[ @"Monthly", @2592000 ] ]) {
+        [self.checkInterval addItemWithTitle:choice[0]];
+        self.checkInterval.lastItem.tag = [choice[1] integerValue];
+    }
+    self.checkInterval.target = self;
+    self.checkInterval.action = @selector(chooseInterval:);
+    self.lastChecked = [NSTextField labelWithString:@""];
+    self.checkNow = pushButton(@"Check Now…", self, @selector(checkNow:));
+    self.version = [NSTextField labelWithString:@""];
+    NSGridView *grid = form(@[
+        @[ @"Software Update:", self.updatesBox ],
+        @[ @"", self.checkInterval ],
+        @[ @"Last checked:", self.lastChecked ],
+        @[ @"", self.checkNow ],
+        NSNull.null,
+        @[ @"Version:", self.version ],
+    ]);
+    // Without Sparkle, the app checks daily and keeps no check history.
+    self.sparkleRows = @[ [grid rowAtIndex:1], [grid rowAtIndex:2] ];
+    return grid;
+}
+- (NSView *)donate {
+    // Ko-fi's logo from the app's asset catalog; a build without one shows a cup.
+    NSImage *logo = [NSImage imageNamed:@"KoFi"];
+    NSImageView *cup;
+    if (logo) {
+        cup = [NSImageView imageViewWithImage:logo];
+        [cup.widthAnchor constraintEqualToConstant:50].active = YES;
+        [cup.heightAnchor constraintEqualToAnchor:cup.widthAnchor multiplier:logo.size.height / logo.size.width]
+            .active = YES;
+    } else {
+        NSImageSymbolConfiguration *large = [NSImageSymbolConfiguration configurationWithPointSize:34
+                                                                                            weight:NSFontWeightRegular];
+        cup = [NSImageView imageViewWithImage:[symbol(@"cup.and.saucer.fill", @"Ko-fi")
+                                                  imageWithSymbolConfiguration:large]];
+        cup.contentTintColor = NSColor.controlAccentColor;
+    }
+    cup.imageScaling = NSImageScaleProportionallyUpOrDown;
+    NSButton *support = pushButton(@"Support", self, @selector(openDonate:));
+    support.keyEquivalent = @"\r";
+    NSTextField *name = [NSTextField labelWithString:@"Ko-fi"];
+    name.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
+    NSStackView *kofi = [NSStackView stackViewWithViews:@[ cup, name, support ]];
+    kofi.orientation = NSUserInterfaceLayoutOrientationVertical;
+    kofi.spacing = 8;
+    NSTextField *free = [NSTextField wrappingLabelWithString:@"Runberth is free and open source, and every feature "
+                                                             @"is available to everyone."];
+    NSTextField *ask = [NSTextField wrappingLabelWithString:@"Donations help keep it developed. If you would like to "
+                                                            @"support the work, you can buy a coffee on Ko-fi."];
+    free.preferredMaxLayoutWidth = ask.preferredMaxLayoutWidth = 400;
+    NSStackView *stack = column(@[ free, ask, kofi ]);
+    stack.spacing = 16;
+    [stack setCustomSpacing:24 afterView:ask];
+    [kofi.centerXAnchor constraintEqualToAnchor:stack.centerXAnchor].active = YES;
+    return stack;
+}
+/* Sparkle's schedule and history, read again whenever the window shows. */
+- (void)refreshUpdates {
+    id updater = [self updater];
+    for (NSGridRow *gridRow in self.sparkleRows)
+        gridRow.hidden = !updater;
+    if (!updater)
+        return;
+    [self.checkInterval selectItemWithTag:[[updater valueForKey:@"updateCheckInterval"] integerValue]];
+    if (self.checkInterval.indexOfSelectedItem < 0)
+        [self.checkInterval selectItemAtIndex:0];
+    self.checkInterval.enabled = self.updatesBox.state == NSControlStateValueOn;
+    NSDate *date = [updater valueForKey:@"lastUpdateCheckDate"];
+    self.lastChecked.stringValue = date ? [NSDateFormatter localizedStringFromDate:date
+                                                                         dateStyle:NSDateFormatterMediumStyle
+                                                                         timeStyle:NSDateFormatterMediumStyle]
+                                        : @"Never";
+}
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    [self refreshUpdates];
+}
+- (void)chooseInterval:(NSPopUpButton *)sender {
+    [[self updater] setValue:@((double)sender.selectedTag) forKey:@"updateCheckInterval"];
+}
+- (void)openDonate:(id)sender {
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:DonateURL]];
 }
 - (void)build {
     NSTabViewController *tabs = [[NSTabViewController alloc] init];
     tabs.tabStyle = NSTabViewControllerTabStyleToolbar;
-    [tabs addTabViewItem:pane(@"Server", @"server.rack", [self server])];
-    [tabs addTabViewItem:pane(@"GitHub", @"key", [self github])];
-    [tabs addTabViewItem:pane(@"General", @"gearshape", [self general])];
+    [tabs addTabViewItem:pane(@"Server", symbol(@"server.rack", @"Server"), [self server])];
+    [tabs addTabViewItem:pane(@"GitHub", symbol(@"key", @"GitHub"), [self github])];
+    [tabs addTabViewItem:pane(@"General", symbol(@"gearshape", @"General"), [self general])];
+    [tabs addTabViewItem:pane(@"Updates", symbol(@"arrow.triangle.2.circlepath", @"Updates"), [self updates])];
+    [tabs addTabViewItem:pane(@"Donate", donateIcon(), [self donate])];
     self.window = [NSWindow windowWithContentViewController:tabs];
     self.window.styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable;
     self.window.releasedWhenClosed = NO;
@@ -281,9 +414,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         self.updatesBox.state = [fields[@"check_updates"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
         self.token.stringValue = @"";
         self.testStatus.hidden = self.tokenMessage.hidden = YES;
-        self.version.stringValue = [NSString stringWithFormat:@"Runberth %@", state[@"version"]];
-        self.checkNow.hidden = ![state[@"sparkle"] boolValue];
+        self.version.stringValue = [NSString stringWithFormat:@"%@", state[@"version"]];
     }
+    [self refreshUpdates];
     [self status:state];
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:nil];
@@ -346,6 +479,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 }
 - (void)changed:(id)sender {
     [self save];
+    self.checkInterval.enabled = self.updatesBox.state == NSControlStateValueOn;
 }
 - (void)windowWillClose:(NSNotification *)notification {
     if (self.saveTimer)

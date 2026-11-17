@@ -35,7 +35,8 @@ Choose **Settings…** in the menu. Opening Runberth again while it runs also sh
 
 1. **Server:** enter the host, the SSH user, and the port, and choose the private key, as for `scripts/install-vps.sh`. Without a key, ssh uses your agent and `~/.ssh/config`. The server's host key must already be in `~/.ssh/known_hosts`: connect once with `ssh` first. Choose **Test Connection** to check: it shows the server's Runberth version and how many repositories are connected, or what went wrong.
 2. **GitHub:** paste a token and choose **Save**. The app keeps it in your login keychain, never in a file. **Create a Token…** opens GitHub's token page. Instead of a stored token, the app can run a **token command** that prints one, such as `gh auth token --user NAME`.
-3. **General:** how often the app refreshes, which finished runs it announces (all, failed only, or none), Launch at Login, and automatic update checks.
+3. **General:** how often the app refreshes, which finished runs it announces (all, failed only, or none), and Launch at Login.
+4. **Updates:** automatic update checks and how often they run, when the app last checked, and **Check Now…**. **Donate** links to Ko-fi.
 
 The window edits the settings file below, which stays the single source of truth; **Open settings.json** opens it.
 
