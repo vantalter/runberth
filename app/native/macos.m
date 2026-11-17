@@ -77,11 +77,12 @@ static NSImage *trayIcon(NSString *state, CGFloat angle) {
                               if (!badge)
                                   return YES;
                               if (angle != 0) {
-                                  // The badge's centre on the 24-unit grid, (19.5, 19), at 18 points.
+                                  // The badge's centre on the 24-unit grid, (19, 18.9), at 18
+                                  // points: x 19 * 0.75, y (24 - 18.9) * 0.75 from the bottom.
                                   NSAffineTransform *turn = [NSAffineTransform transform];
-                                  [turn translateXBy:14.625 yBy:3.75];
+                                  [turn translateXBy:14.25 yBy:3.825];
                                   [turn rotateByDegrees:-angle];
-                                  [turn translateXBy:-14.625 yBy:-3.75];
+                                  [turn translateXBy:-14.25 yBy:-3.825];
                                   [turn concat];
                               }
                               [badge drawInRect:rect];

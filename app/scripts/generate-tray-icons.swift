@@ -62,22 +62,29 @@ let cabin = svgPath("M9.7 8.9 L14.6 7.9 C15.1 7.8 15.5 8.1 15.5 8.6 L15.7 11 L10
 let window = svgPath("M10.8 9.7 L14.3 9 L14.4 10.3 L11 11 Z")
 let glyph = frame.union(hull).union(cabin.subtracting(window))
 
-// The badge sits in the berth's entrance, with a gap around it.
-let center = CGPoint(x: 19.5, y: 19)
-let cut = glyph.subtracting(circle(center, 5.1))
-let disc = circle(center, 4.1)
-let check = stroke(polyline([CGPoint(x: 17.6, y: 19.1), CGPoint(x: 19, y: 20.5), CGPoint(x: 21.5, y: 17.6)]), width: 1.4)
-let exclamation = CGPath(roundedRect: CGRect(x: 18.82, y: 16.3, width: 1.36, height: 3.5),
-                         cornerWidth: 0.68, cornerHeight: 0.68, transform: nil)
-    .union(circle(CGPoint(x: 19.5, y: 21.35), 0.78))
-let cross = stroke(polyline([CGPoint(x: 18, y: 17.5), CGPoint(x: 21, y: 20.5)]), width: 1.4)
-    .union(stroke(polyline([CGPoint(x: 21, y: 17.5), CGPoint(x: 18, y: 20.5)]), width: 1.4))
+// The badge sits in the berth's entrance, with a gap around it. Its symbols
+// are drawn for a 4.1-unit disc and scaled to the badge's radius.
+let center = CGPoint(x: 19, y: 18.9)
+let radius: CGFloat = 4.9
+let scale = radius / 4.1
+/// A point `dx`, `dy` units from the badge's centre, at the 4.1-unit design size.
+func at(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint {
+    CGPoint(x: center.x + dx * scale, y: center.y + dy * scale)
+}
+let cut = glyph.subtracting(circle(center, radius + 1))
+let disc = circle(center, radius)
+let check = stroke(polyline([at(-1.9, 0.1), at(-0.5, 1.5), at(2, -1.4)]), width: 1.4 * scale)
+let exclamation = CGPath(roundedRect: CGRect(origin: at(-0.68, -2.7), size: CGSize(width: 1.36 * scale, height: 3.5 * scale)),
+                         cornerWidth: 0.68 * scale, cornerHeight: 0.68 * scale, transform: nil)
+    .union(circle(at(0, 2.35), 0.78 * scale))
+let cross = stroke(polyline([at(-1.5, -1.5), at(1.5, 1.5)]), width: 1.4 * scale)
+    .union(stroke(polyline([at(1.5, -1.5), at(-1.5, 1.5)]), width: 1.4 * scale))
 /// Three quarters of a ring, starting at the top, rotated by `degrees`.
 func spinner(_ degrees: CGFloat) -> CGPath {
     let arc = CGMutablePath()
     let start = (-90 + degrees) * .pi / 180
-    arc.addArc(center: center, radius: 3.3, startAngle: start, endAngle: start + 1.5 * .pi, clockwise: false)
-    return stroke(arc, width: 1.6)
+    arc.addArc(center: center, radius: 3.3 * scale, startAngle: start, endAngle: start + 1.5 * .pi, clockwise: false)
+    return stroke(arc, width: 1.6 * scale)
 }
 
 // MARK: macOS
