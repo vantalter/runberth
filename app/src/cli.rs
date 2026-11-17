@@ -107,7 +107,7 @@ fn execute(remote: &[&str], needs_token: bool) -> Result<i32, String> {
     };
     // A terminal for commands that redraw or follow, such as status --watch.
     let terminal = token.is_none() && stdin.is_terminal() && std::io::stdout().is_terminal();
-    let mut command = server::command(server, &config::cache_dir().join("ssh"), remote, terminal)?;
+    let mut command = server::command(server, remote, terminal)?;
     if token.is_some() {
         command.stdin(Stdio::piped());
     }

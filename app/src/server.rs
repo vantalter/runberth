@@ -1,7 +1,7 @@
 //! The server's state, read over SSH with `runberth status --json`. The
 //! install script's sudoers rule allows that command without a password.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::Deserialize;
@@ -68,9 +68,38 @@ impl Status {
     }
 }
 
-/// Unix socket paths are limited to 104 bytes on macOS and 108 on Linux;
-/// ssh's %C token adds 41.
+/// Unix socket paths are limited to 104 bytes with the closing NUL on macOS,
+/// and 108 on Linux.
 const SOCKET_PATH_MAX: usize = 103;
+/// A socket's name in its folder: "/", ssh's 40-character %C, and the
+/// 17-character temporary suffix, such as ".l16Jduvqla2EqEGe", that ssh adds
+/// while it creates the socket.
+const SOCKET_NAME: usize = 1 + 40 + 17;
+
+fn fits(dir: &Path) -> bool {
+    dir.as_os_str().len() + SOCKET_NAME <= SOCKET_PATH_MAX
+}
+
+/// A folder only this user can use, created if missing.
+fn private_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
+        meta.is_dir() && meta.uid() == unsafe { libc::getuid() } && meta.mode() & 0o077 == 0
+    })
+}
+
+/// Where ssh keeps the shared connection's socket: the app's cache folder,
+/// or, when its path is too long for a socket, a private folder in /tmp.
+/// None turns connection sharing off.
+fn socket_dir() -> Option<PathBuf> {
+    let cache = crate::config::cache_dir().join("ssh");
+    if fits(&cache) && std::fs::create_dir_all(&cache).is_ok() {
+        return Some(cache);
+    }
+    let short = PathBuf::from(format!("/tmp/runberth-{}", unsafe { libc::getuid() }));
+    (fits(&short) && private_dir(&short)).then_some(short)
+}
 
 /// Whether an argument can pass through ssh's remote command line, which the
 /// server's shell splits: repository names, options, and numbers only.
@@ -85,7 +114,7 @@ pub fn safe_argument(argument: &str) -> bool {
 /// shared connection, kept for two minutes, saves a handshake on every
 /// refresh, where its socket path fits. `terminal` allocates one for
 /// commands that redraw, such as `status --watch`.
-pub fn ssh_args(server: &Server, socket_dir: &Path, remote: &[&str], terminal: bool) -> Vec<String> {
+pub fn ssh_args(server: &Server, socket_dir: Option<&Path>, remote: &[&str], terminal: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "BatchMode=yes",
         "ConnectTimeout=10",
@@ -95,8 +124,10 @@ pub fn ssh_args(server: &Server, socket_dir: &Path, remote: &[&str], terminal: b
     .iter()
     .flat_map(|option| ["-o".to_owned(), (*option).to_owned()])
     .collect();
-    let socket_dir = socket_dir.display().to_string();
-    if socket_dir.len() + 41 <= SOCKET_PATH_MAX {
+    if let Some(socket_dir) = socket_dir
+        .filter(|dir| fits(dir))
+        .map(|dir| dir.display().to_string())
+    {
         for option in [
             "ControlMaster=auto".to_owned(),
             format!("ControlPath={socket_dir}/%C"),
@@ -122,12 +153,7 @@ pub fn ssh_args(server: &Server, socket_dir: &Path, remote: &[&str], terminal: b
 /// The command that runs `runberth REMOTE...` with sudo on the server: over
 /// ssh, or directly when the server is this computer. The install script's
 /// sudoers rule allows connect, disconnect, cleanup, status, and logs.
-pub fn command(
-    server: &Server,
-    socket_dir: &Path,
-    remote: &[&str],
-    terminal: bool,
-) -> Result<Command, String> {
+pub fn command(server: &Server, remote: &[&str], terminal: bool) -> Result<Command, String> {
     if let Some(unsafe_argument) = remote.iter().find(|argument| !safe_argument(argument)) {
         return Err(format!("Unexpected argument {unsafe_argument:?}"));
     }
@@ -143,17 +169,15 @@ pub fn command(
         command.arg("-n").arg(RUNBERTH).args(remote);
         return Ok(command);
     }
-    std::fs::create_dir_all(socket_dir)
-        .map_err(|error| format!("Cannot create {}: {error}", socket_dir.display()))?;
     // RUNBERTH_APP_SSH replaces ssh in tests/tray_linux.py.
     let ssh = std::env::var_os("RUNBERTH_APP_SSH").unwrap_or_else(|| "/usr/bin/ssh".into());
     let mut command = Command::new(ssh);
-    command.args(ssh_args(server, socket_dir, remote, terminal));
+    command.args(ssh_args(server, socket_dir().as_deref(), remote, terminal));
     Ok(command)
 }
 
-pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
-    let output = command(server, socket_dir, &["status", "--json"], false)?
+pub fn fetch(server: &Server) -> Result<Status, String> {
+    let output = command(server, &["status", "--json"], false)?
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("Cannot run ssh: {error}"))?;
@@ -244,7 +268,12 @@ mod tests {
             port: 2222,
             key: Some("/keys/vps".into()),
         };
-        let args = ssh_args(&server, Path::new("/cache/ssh"), &["status", "--json"], false);
+        let args = ssh_args(
+            &server,
+            Some(Path::new("/cache/ssh")),
+            &["status", "--json"],
+            false,
+        );
         let joined = args.join(" ");
         assert!(joined.contains("BatchMode=yes"));
         assert!(joined.contains("ControlPath=/cache/ssh/%C"));
@@ -252,14 +281,50 @@ mod tests {
         assert!(joined.ends_with("sudo -n /opt/runberth/bin/runberth status --json"));
         let long = Path::new("/a/very/long/cache/directory/that/would/not/fit/in/a/unix/socket/path");
         assert!(
-            !ssh_args(&server, long, &[], false)
+            !ssh_args(&server, Some(long), &[], false)
                 .join(" ")
                 .contains("ControlPath")
         );
         let agent = Server { key: None, ..server };
-        assert!(!ssh_args(&agent, Path::new("/c"), &[], false).contains(&"-i".to_owned()));
-        let watch = ssh_args(&agent, Path::new("/c"), &["status", "--watch", "5"], true).join(" ");
+        assert!(!ssh_args(&agent, Some(Path::new("/c")), &[], false).contains(&"-i".to_owned()));
+        let watch = ssh_args(&agent, Some(Path::new("/c")), &["status", "--watch", "5"], true).join(" ");
         assert!(watch.ends_with("-t ubuntu@192.0.2.1 sudo -n /opt/runberth/bin/runberth status --watch 5"));
+    }
+
+    #[test]
+    fn socket_paths_leave_room_for_ssh_s_temporary_suffix() {
+        // The cache folder of a 16-character user name, as in a real report.
+        assert!(!fits(Path::new(
+            "/Users/ivantalakhovskyy/Library/Caches/Runberth/ssh"
+        )));
+        assert!(fits(Path::new("/tmp/runberth-501")));
+        let server = Server {
+            host: "h".into(),
+            user: "u".into(),
+            port: 22,
+            key: None,
+        };
+        let long = Path::new("/Users/ivantalakhovskyy/Library/Caches/Runberth/ssh");
+        assert!(
+            !ssh_args(&server, Some(long), &[], false)
+                .join(" ")
+                .contains("ControlPath")
+        );
+        assert!(
+            !ssh_args(&server, None, &[], false)
+                .join(" ")
+                .contains("ControlPath")
+        );
+    }
+
+    #[test]
+    fn the_short_socket_folder_must_be_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("runberth-app-sockets-{}", std::process::id()));
+        assert!(private_dir(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!private_dir(&dir));
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
@@ -282,6 +347,6 @@ mod tests {
             port: 22,
             key: None,
         };
-        assert!(command(&server, Path::new("/tmp"), &["logs", "o/r;id"], false).is_err());
+        assert!(command(&server, &["logs", "o/r;id"], false).is_err());
     }
 }

@@ -212,7 +212,7 @@ fn run_on_server(remote: &[&str], token: bool) -> Result<Vec<u8>, String> {
     let config = config::load(&config::settings_path())?;
     let server = config.server().ok_or("No server set")?;
     let token = if token { Some(token::read(&config)?) } else { None };
-    let mut child = server::command(server, &config::cache_dir().join("ssh"), remote, false)?
+    let mut child = server::command(server, remote, false)?
         .stdin(if token.is_some() {
             Stdio::piped()
         } else {
@@ -334,7 +334,7 @@ fn test_connection() {
             Err(error) => (error, false),
             Ok(config) => match config.server() {
                 None => ("Enter the server's host first".to_owned(), false),
-                Some(server) => match server::fetch(server, &config::cache_dir().join("ssh")) {
+                Some(server) => match server::fetch(server) {
                     Ok(status) => {
                         let repos = status.runners.as_ref().map_or(0, Vec::len);
                         let noun = if repos == 1 { "repository" } else { "repositories" };
@@ -393,9 +393,7 @@ impl Poller {
             config::Config::parse("{}").expect("empty settings parse")
         });
         let server = config.server().cloned();
-        let result = server
-            .as_ref()
-            .map(|server| server::fetch(server, &config::cache_dir().join("ssh")));
+        let result = server.as_ref().map(server::fetch);
         if let Some(Ok(status)) = &result {
             self.last_status = Some(status.clone());
         }
