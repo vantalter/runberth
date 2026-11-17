@@ -1,7 +1,7 @@
 // Generates the tray icons from one geometry, on a 24-unit grid:
 //   swift app/scripts/generate-tray-icons.swift app/assets/tray
 //
-// macOS (36-pixel PNGs, drawn at 18 points): the glyph as a template, a copy
+// macOS (40-pixel PNGs, drawn at 20 points): the glyph as a template, a copy
 // cut out for a badge, and the coloured badges; the app tints the glyph with
 // the menu bar's text colour and rotates the running badge.
 //
@@ -90,7 +90,7 @@ func spinner(_ degrees: CGFloat) -> CGPath {
 // MARK: macOS
 
 func png(_ name: String, draw: (CGContext) -> Void) {
-    let pixels = 36
+    let pixels = 40
     let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8,
         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,

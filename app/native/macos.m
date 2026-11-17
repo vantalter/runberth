@@ -42,7 +42,7 @@ static Tray *tray;
 
 static NSImage *layer(const unsigned char *png, size_t length) {
     NSImage *image = [[NSImage alloc] initWithData:[NSData dataWithBytes:png length:length]];
-    image.size = NSMakeSize(18, 18);
+    image.size = NSMakeSize(20, 20);
     return image;
 }
 
@@ -65,7 +65,7 @@ static NSImage *trayIcon(NSString *state, CGFloat angle) {
     NSImage *shape = badge ? cut : glyph;
     // Not a template, so the badge keeps its colour: the handler tints the
     // glyph for the appearance it is drawn in, light or dark menu bar.
-    NSImage *icon = [NSImage imageWithSize:NSMakeSize(18, 18)
+    NSImage *icon = [NSImage imageWithSize:NSMakeSize(20, 20)
                                    flipped:NO
                             drawingHandler:^BOOL(NSRect rect) {
                               CGContextRef context = NSGraphicsContext.currentContext.CGContext;
@@ -77,12 +77,12 @@ static NSImage *trayIcon(NSString *state, CGFloat angle) {
                               if (!badge)
                                   return YES;
                               if (angle != 0) {
-                                  // The badge's centre on the 24-unit grid, (19, 18.9), at 18
-                                  // points: x 19 * 0.75, y (24 - 18.9) * 0.75 from the bottom.
+                                  // The badge's centre on the 24-unit grid, (19, 18.9), at 20
+                                  // points: x 19 * 20/24, y (24 - 18.9) * 20/24 from the bottom.
                                   NSAffineTransform *turn = [NSAffineTransform transform];
-                                  [turn translateXBy:14.25 yBy:3.825];
+                                  [turn translateXBy:15.833 yBy:4.25];
                                   [turn rotateByDegrees:-angle];
-                                  [turn translateXBy:-14.25 yBy:-3.825];
+                                  [turn translateXBy:-15.833 yBy:-4.25];
                                   [turn concat];
                               }
                               [badge drawInRect:rect];
