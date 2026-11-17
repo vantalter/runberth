@@ -129,6 +129,7 @@ ssh.write_text(f"""#!/bin/sh
 case "$*" in
   *"status --json") cat '{status_file}' ;;
   *" connect o/new") read token; echo "$token|$*" > '{connected}' ;;
+  *" logs o/r --lines 300") echo "runner journal for o/r" ;;
   *) echo "runberth: unexpected $*" >&2; exit 1 ;;
 esac
 """)
@@ -238,6 +239,14 @@ try:
         check(token == "test-token", "the token reaches the server on stdin")
         check("test-token" not in command and command.endswith("/opt/runberth/bin/runberth connect o/new"),
               f"the server runs connect: {command}")
+        show_logs = find(find(menu(owner), next(l.strip() for l in labels(menu(owner)) if l.strip().startswith("✓ r"))), "Show Logs")
+        if show_logs:
+            call(owner, "/MenuBar", "com.canonical.dbusmenu", "Event",
+                 GLib.Variant("(isvu)", (show_logs[0], "clicked", GLib.Variant("s", ""), 0)))
+        log = home / ".cache/runberth/logs/o-r.log"
+        check(wait(lambda: log.exists(), 10) and "runner journal for o/r" in log.read_text(),
+              "Show Logs saves the repository's logs")
+
         # The same binary is the `runberth` command: a piped token wins.
         connected.unlink()
         cli = subprocess.run([binary, "connect", "o/new"], input="cli-token\n", text=True, env=env,

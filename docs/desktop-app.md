@@ -72,9 +72,11 @@ secret-tool store --label="Runberth GitHub token" service runberth account githu
 
 Set `host`, `user`, `port`, and `key` as for `scripts/install-vps.sh`; without `key`, ssh uses your agent and `~/.ssh/config`. When Runberth runs on the same Linux computer as the app, set `host` to `localhost`: on port 22 the app runs `sudo -n /opt/runberth/bin/runberth status --json` itself, without SSH, and the menu names the server **This computer**. That needs the same passwordless sudo rule for your account that `--sudoers` installs. On any other port, such as a virtual machine's forwarded SSH port, `localhost` still connects with ssh. `notifications` is `all`, `failures`, or `off`. The app refreshes every `interval_seconds`, every 10 seconds while runs are in progress, and when you open the menu. It reads the file again on every refresh, so edits apply without a restart. The token is never in this file; on macOS you can also store it from a terminal with `security add-generic-password -s Runberth -a github -w`, which prompts for it.
 
-## Connect and disconnect repositories
+## Connect, disconnect, and logs
 
 **Connect Repository** in the menu lists your private repositories that are not connected yet. Choose one to connect it, as `runberth connect` does on the server: the repository needs `.github/runberth.json` on its default branch, as in [Connect a repository](../README.md#2-connect-a-repository). To disconnect one, open its submenu and choose **Disconnect**, then confirm with **Disconnect OWNER/REPO**. Change its jobs' `runs-on` first, as the [personal account guide](personal-account-setup.md) describes. The menu shows the work in progress, and a notification reports the result or the server's error.
+
+**Show Logs** in a repository's submenu saves its latest 300 lines of lock helper notes and runner journal, as `runberth logs` prints them, to the app's cache folder and opens them in your text editor. To follow them live, run `runberth logs OWNER/REPO --follow`.
 
 ## The runberth command
 

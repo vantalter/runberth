@@ -94,6 +94,7 @@ fn perform(action: Action) {
         Action::CheckUpdates if SPARKLE.load(Ordering::Relaxed) => unsafe { native::native_check_updates() },
         Action::CheckUpdates => wake(Wake::CheckUpdates),
         Action::Connect(repo) => start_operation("connect", repo),
+        Action::Logs(repo) => show_logs(repo),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
             wake(Wake::Stop);
@@ -202,31 +203,71 @@ fn start_operation(command: &'static str, repo: String) {
 }
 
 fn run_operation(command: &str, repo: &str) -> Result<(), String> {
+    run_on_server(&[command, repo], true).map(drop)
+}
+
+/// Runs `runberth REMOTE...` on the server in the settings and returns its
+/// output. With `token`, the app's GitHub token is passed on stdin.
+fn run_on_server(remote: &[&str], token: bool) -> Result<Vec<u8>, String> {
     let config = config::load(&config::settings_path())?;
     let server = config.server().ok_or("No server set")?;
-    let token = token::read(&config)?;
-    let mut child = server::command(server, &config::cache_dir().join("ssh"), &[command, repo], false)?
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+    let token = if token { Some(token::read(&config)?) } else { None };
+    let mut child = server::command(server, &config::cache_dir().join("ssh"), remote, false)?
+        .stdin(if token.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("Cannot run ssh: {error}"))?;
-    if let Some(mut input) = child.stdin.take() {
+    if let (Some(token), Some(mut input)) = (token, child.stdin.take()) {
         input
             .write_all(format!("{token}\n").as_bytes())
             .map_err(|error| format!("Cannot pass the token: {error}"))?;
     }
     let output = child.wait_with_output().map_err(|error| error.to_string())?;
     if output.status.success() {
-        Ok(())
+        Ok(output.stdout)
     } else {
         Err(server::failure(
             server.host.trim(),
-            command,
+            remote[0],
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
         ))
     }
+}
+
+/// The lines Show Logs fetches; `runberth logs OWNER/REPO --follow` streams.
+const LOG_LINES: &str = "300";
+
+/// Saves a repository's latest lock notes and runner journal to a file in the
+/// cache folder and opens it in the text editor.
+fn show_logs(repo: String) {
+    in_background(move || {
+        let path = config::cache_dir()
+            .join("logs")
+            .join(format!("{}.log", repo.replace('/', "-")));
+        let saved = run_on_server(&["logs", &repo, "--lines", LOG_LINES], false).and_then(|output| {
+            std::fs::create_dir_all(path.parent().expect("a logs folder"))
+                .and_then(|()| std::fs::write(&path, output))
+                .map_err(|error| format!("Cannot save the logs: {error}"))
+        });
+        match saved {
+            Ok(()) if cfg!(target_os = "macos") => {
+                // -t opens the text editor rather than the app for .log files.
+                let _ = Command::new("open").arg("-t").arg(&path).spawn();
+            }
+            Ok(()) => open(&path.display().to_string()),
+            Err(error) => native::notify(
+                &format!("Cannot read logs for {}", runs::short(&repo)),
+                &error,
+                "",
+            ),
+        }
+    });
 }
 
 /// Opens the Settings window with the settings file's current values.

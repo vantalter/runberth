@@ -21,6 +21,8 @@ pub enum Action {
     Connect(String),
     /// Remove the repository's runner.
     Disconnect(String),
+    /// Open the repository's latest lock notes and runner journal.
+    Logs(String),
     Quit,
 }
 
@@ -167,6 +169,7 @@ fn repo_item(
         "Open Actions on GitHub",
         Action::Open(format!("https://github.com/{}/actions", view.repo)),
     ));
+    items.push(builder.item("Show Logs", Action::Logs(view.repo.clone())));
     if let Some(verb) = operation {
         items.push(builder.info(format!("{verb}…")));
         return builder.submenu(format!("{name} — {}…", verb.to_lowercase()), items);
@@ -540,6 +543,8 @@ mod tests {
         assert_eq!(labels(&disconnect["children"])[0], "Disconnect o/r");
         let id = disconnect["children"][0]["id"].as_u64().unwrap() as u32;
         assert_eq!(actions[&id], Action::Disconnect("o/r".into()));
+        let id = find(repo, "Show Logs")["id"].as_u64().unwrap() as u32;
+        assert_eq!(actions[&id], Action::Logs("o/r".into()));
     }
 
     #[test]
