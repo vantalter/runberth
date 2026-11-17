@@ -10,6 +10,7 @@ use crate::config::{Server, expand};
 
 /// The status format this app understands; see `status_json` in the server.
 const FORMAT: u64 = 1;
+const RUNBERTH: &str = "/opt/runberth/bin/runberth";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Memory {
@@ -99,11 +100,14 @@ pub fn ssh_args(server: &Server, socket_dir: &Path) -> Vec<String> {
         args.extend(["-o".into(), "IdentitiesOnly=yes".into()]);
     }
     args.push(format!("{}@{}", server.user, server.host));
-    args.extend(["sudo", "-n", "/opt/runberth/bin/runberth", "status", "--json"].map(str::to_owned));
+    args.extend(["sudo", "-n", RUNBERTH, "status", "--json"].map(str::to_owned));
     args
 }
 
 pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
+    if server.is_local() {
+        return fetch_local();
+    }
     std::fs::create_dir_all(socket_dir)
         .map_err(|error| format!("Cannot create {}: {error}", socket_dir.display()))?;
     // RUNBERTH_APP_SSH replaces ssh in tests/tray_linux.py.
@@ -116,6 +120,30 @@ pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
     if !output.status.success() {
         return Err(failure(
             &server.host,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    Status::parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Runberth on this computer, with the same passwordless sudo rule as over ssh.
+fn fetch_local() -> Result<Status, String> {
+    if !Path::new(RUNBERTH).exists() {
+        return Err(if cfg!(target_os = "macos") {
+            "Runberth servers run on Linux; enter your server's address instead of localhost".into()
+        } else {
+            format!("Runberth is not installed on this computer ({RUNBERTH})")
+        });
+    }
+    let output = Command::new("sudo")
+        .args(["-n", RUNBERTH, "status", "--json"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("Cannot run sudo: {error}"))?;
+    if !output.status.success() {
+        return Err(failure(
+            "localhost",
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
         ));

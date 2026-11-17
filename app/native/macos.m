@@ -257,7 +257,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.port = textField(@"22", 70, self);
     self.key = textField(@"~/.ssh/id_ed25519", 260, self);
     NSTextField *keyNote = noteLabel();
-    keyNote.stringValue = @"Leave empty to use your SSH agent and ~/.ssh/config. The server's host key "
+    keyNote.stringValue = @"Leave empty to use your SSH agent and ~/.ssh/config. For localhost on port 22 "
+                          @"the app runs Runberth on this computer, without SSH. The server's host key "
                           @"must already be known: connect once with ssh first.";
     self.testStatus = noteLabel();
     self.testStatus.hidden = YES;

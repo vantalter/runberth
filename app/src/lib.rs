@@ -334,7 +334,7 @@ impl Poller {
             self.check_updates = false;
         }
         View {
-            server_name: server.map(|server| format!("{}@{}", server.user, server.host)),
+            server_name: server.as_ref().map(config::Server::label),
             server: result,
             repos,
             errors,

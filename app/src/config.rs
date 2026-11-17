@@ -85,6 +85,24 @@ fn default_true() -> bool {
     true
 }
 
+impl Server {
+    /// localhost on SSH's own port is this computer, so the app runs Runberth
+    /// directly; ssh would only reach this computer again. Another port, as
+    /// for a virtual machine's forwarded SSH, still connects with ssh.
+    pub fn is_local(&self) -> bool {
+        matches!(self.host.trim(), "localhost" | "127.0.0.1" | "::1") && self.port == 22
+    }
+
+    /// The server's name in the menu.
+    pub fn label(&self) -> String {
+        if self.is_local() {
+            "This computer".into()
+        } else {
+            format!("{}@{}", self.user, self.host.trim())
+        }
+    }
+}
+
 impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|error| format!("Settings are not valid JSON: {error}"))
@@ -196,6 +214,24 @@ mod tests {
         assert!(config.server().is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), TEMPLATE);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn localhost_on_port_22_is_this_computer() {
+        let server = |host: &str, port: u16| Server {
+            host: host.into(),
+            user: "ubuntu".into(),
+            port,
+            key: None,
+        };
+        for host in ["localhost", "127.0.0.1", "::1", " localhost "] {
+            assert!(server(host, 22).is_local(), "{host}");
+        }
+        assert_eq!(server("localhost", 22).label(), "This computer");
+        // A virtual machine's forwarded SSH port, or another host, uses ssh.
+        assert!(!server("localhost", 2222).is_local());
+        assert!(!server("192.0.2.1", 22).is_local());
+        assert_eq!(server("192.0.2.1", 22).label(), "ubuntu@192.0.2.1");
     }
 
     #[test]
