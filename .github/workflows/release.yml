@@ -1,16 +1,34 @@
 name: Release
 
-# Push a tag such as v0.1.0 to publish a static Linux x86_64 binary and its
-# SHA-256 checksum. The VPS needs neither Rust nor a C toolchain.
+# Push a tag such as v0.2.0, matching the workspace version in Cargo.toml, to
+# publish the static Linux x86_64 server binary, the macOS app with its
+# Sparkle update feed, and the Linux tray app's packages.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        name: Tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  server:
+    needs: version
     runs-on: ubuntu-24.04
     env:
       TARGET: x86_64-unknown-linux-musl
@@ -32,7 +50,153 @@ jobs:
           "./$ASSET" --version
           sha256sum "$ASSET" > "$ASSET.sha256"
           cat "$ASSET.sha256"
-      - name: Publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-server
+          path: runberth-x86_64-unknown-linux-musl*
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The update feed lists the commits since the previous release tag.
+          fetch-depth: 0
+      - name: Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo test -p runberth-app --locked
+      - name: Developer ID certificate and notary key
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          API_KEY: ${{ secrets.APPLE_API_KEY }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=""
+          for name in CERTIFICATE CERTIFICATE_PASSWORD API_KEY API_KEY_ID API_ISSUER; do
+            [ -n "$(printenv "$name")" ] || missing="$missing $name"
+          done
+          if [ "$missing" = " CERTIFICATE CERTIFICATE_PASSWORD API_KEY API_KEY_ID API_ISSUER" ]; then
+            echo "::notice::No signing secrets; the macOS app is ad-hoc signed and not notarized"
+            exit 0
+          fi
+          if [ -n "$missing" ]; then
+            # Partial configuration is a mistake, not a request for an unsigned build.
+            echo "::error::Release signing secrets missing:$missing; see docs/desktop-app.md" >&2
+            exit 1
+          fi
+          # A throwaway keychain holds the certificate for this job only.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -base64 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERTIFICATE has no Developer ID Application identity" >&2
+            exit 1
+          fi
+          printf '%s' "$API_KEY" > "$RUNNER_TEMP/notary-key.p8"
+          {
+            echo "CODESIGN_IDENTITY=$identity"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/notary-key.p8"
+            echo "APPLE_API_KEY_ID=$API_KEY_ID"
+            echo "APPLE_API_ISSUER=$API_ISSUER"
+          } >> "$GITHUB_ENV"
+      - name: Sign, notarize, and package
+        run: |
+          app/scripts/package-macos.sh "Runberth-${{ needs.version.outputs.version }}-macos-universal"
+          app/scripts/check-macos-app.sh
+      - name: Update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::warning::No SPARKLE_PRIVATE_KEY secret; without appcast.xml the macOS app cannot update itself to this release"
+            exit 0
+          fi
+          app/scripts/make-appcast.sh "Runberth-$VERSION-macos-universal.zip" "$VERSION" > appcast.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            Runberth-*.zip
+            Runberth-*.dmg
+            appcast.xml
+
+  linux:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          # 22.04 keeps the glibc requirement at 2.35 for older distributions.
+          - os: ubuntu-22.04
+            arch: x86_64
+            goarch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libjson-glib-dev pkg-config dbus python3-gi
+      - run: cargo test -p runberth-app --locked
+      - run: cargo build -p runberth-app --release --locked
+      - name: Tray, menu, and notifications
+        run: dbus-run-session -- python3 app/tests/tray_linux.py target/release/runberth-app
+      - name: Debian and RPM packages
+        env:
+          NFPM_VERSION: 2.48.0
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.goarch }}
+        run: |
+          archive="nfpm_${NFPM_VERSION}_Linux_${{ matrix.arch }}.tar.gz"
+          base="https://github.com/goreleaser/nfpm/releases/download/v$NFPM_VERSION"
+          curl -sSfLO "$base/$archive"
+          curl -sSfL "$base/checksums.txt" | grep " $archive\$" | sha256sum -c -
+          tar -xzf "$archive" nfpm
+          for packager in deb rpm; do
+            ./nfpm package -f app/packaging/linux/nfpm.yaml -p "$packager" -t .
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: |
+            runberth-app*.deb
+            runberth-app*.rpm
+
+  publish:
+    needs: [version, server, macos, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-files
+          merge-multiple: true
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --title "$GITHUB_REF_NAME" --generate-notes
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cd release-files
+          sha256sum * > SHA256SUMS
+          prerelease=""
+          # Only suffixed versions such as 0.3.0-rc.1: the app's update feed is
+          # read from the latest release, which GitHub never sets to a pre-release.
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" * $prerelease --generate-notes --title "Runberth $VERSION"

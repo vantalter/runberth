@@ -90,11 +90,16 @@ fn passwordless_sudo_matches_the_documented_rule() {
 fn referenced_scripts_exist() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for (path, text) in documents() {
+        let path_char = |c: char| c.is_ascii_alphanumeric() || "/._-".contains(c);
         for (index, _) in text.match_indices("scripts/") {
-            let name: String = text[index..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || "/._-".contains(*c))
-                .collect();
+            // Include a leading directory, as in `app/scripts/...`.
+            let start = text[..index]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| path_char(*c))
+                .last()
+                .map_or(index, |(start, _)| start);
+            let name: String = text[start..].chars().take_while(|c| path_char(*c)).collect();
             assert!(
                 root.join(&name).is_file(),
                 "{} refers to missing {name}",

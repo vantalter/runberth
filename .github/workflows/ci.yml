@@ -26,7 +26,7 @@ jobs:
       - name: Test
         run: cargo test --locked
       - name: Shell scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh app/scripts/*.sh app/macos/build-rust.sh
 
   minimum-rust:
     runs-on: ubuntu-24.04
@@ -36,3 +36,31 @@ jobs:
         run: |
           rustup toolchain install 1.87 --profile minimal
           cargo +1.87 test --locked
+
+  app-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libjson-glib-dev pkg-config dbus python3-gi
+      - name: Lint
+        run: cargo clippy -p runberth-app --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p runberth-app --locked
+      - name: Tray, menu, and notifications
+        run: |
+          cargo build -p runberth-app --locked
+          dbus-run-session -- python3 app/tests/tray_linux.py target/debug/runberth-app
+
+  app-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: cargo clippy -p runberth-app --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p runberth-app --locked
+      - name: App bundle
+        run: |
+          app/scripts/build-macos-app.sh
+          app/scripts/check-macos-app.sh

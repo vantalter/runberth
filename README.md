@@ -4,7 +4,7 @@
 
 Runberth brings your existing GitHub Actions workflows to a small Linux server. Install it once, connect your private repositories, and serialize their workflow steps across the host. Keep your workflow files, PR checks, and push triggers in GitHub.
 
-Runberth is a single static Rust binary with no runtime dependencies, and it adds no persistent background service. GitHub's official runners handle communication with GitHub; systemd manages their lifecycle. A small lock helper runs while a job is active. There is no Runberth dashboard, database, webhook endpoint, or Docker or Kubernetes requirement.
+Runberth is a single static Rust binary with no runtime dependencies, and it adds no persistent background service. GitHub's official runners handle communication with GitHub; systemd manages their lifecycle. A small lock helper runs while a job is active. There is no Runberth database, webhook endpoint, or Docker or Kubernetes requirement; an optional [desktop app](docs/desktop-app.md) shows the server from your Mac or Linux desktop.
 
 > **Early preview.** Local tests cover setup logic, job coordination, and cleanup. Installation, shutdown, and out-of-memory recovery still need validation on a real VPS. Host capacity and build performance have not been measured yet.
 
@@ -95,6 +95,10 @@ scripts/vps.sh on-demand off                # back to always-running runners
 
 The dock waits on each runner's behalf with that runner's own credentials. When a job arrives it closes its connection without taking the job, and the runner it starts receives the job from GitHub. After 10 idle minutes (`on-demand on --idle-minutes N`) the dock stops the runner again. A job therefore waits for the runner to start, typically 5 to 15 seconds. This relies on the part of GitHub's runner protocol that waits for work, which GitHub does not document; a GitHub change could break it, and `on-demand off` returns to the standard setup.
 
+### 6. Desktop app
+
+The Runberth app for macOS and Linux shows the server in the menu bar or tray: memory and the lock holder, each connected repository's runs and the jobs in progress, and a notification when a run finishes. It reads the server with `status --json` over SSH and the runs from GitHub. See the [desktop app guide](docs/desktop-app.md) to install and set it up.
+
 ## Small footprint, realistic limits
 
 Runberth is designed to add little machinery around GitHub's runners. Its only process during a job is the lock helper, which holds about 1.5 MB of resident memory (measured on Ubuntu 24.04; the earlier Python helper used about 16 MB). Between jobs, Runberth runs nothing. Each connected personal repository still needs its own running listener, and each account keeps its own toolchains and caches. Idle RAM and disk use grow with the number of connected projects.
@@ -133,5 +137,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 The binary is `target/x86_64-unknown-linux-musl/release/runberth`. Run `runberth` without arguments to list its commands.
+
+The desktop app is the workspace member `app/`; `cargo test -p runberth-app` tests it. See [Build from source](docs/desktop-app.md#build-from-source) for its native dependencies and the macOS app bundle.
 
 Reports from real installations are especially useful during this preview: include the OS, architecture, connected runner count, workload, and memory observations. Remove tokens and repository secrets from logs before sharing them.

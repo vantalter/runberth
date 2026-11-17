@@ -1,0 +1,50 @@
+# .deb and .rpm packages of the tray app, built by the release workflow with nfpm:
+#   VERSION=0.2.0 ARCH=amd64 nfpm package -f app/packaging/linux/nfpm.yaml -p deb -t OUTDIR
+# Run from the repository root. ARCH uses Go names (amd64, arm64).
+name: runberth-app
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: devel
+priority: optional
+maintainer: Ivan Talakhovskyy <4086581+vantalter@users.noreply.github.com>
+homepage: https://github.com/vantalter/runberth
+license: MIT
+description: |-
+  Tray app for a Runberth server.
+  Shows the repositories connected to a Runberth GitHub Actions server,
+  their running jobs and latest results, and notifies when a run finishes.
+  Uses a StatusNotifier tray; on GNOME, enable the AppIndicator extension.
+
+contents:
+  - src: target/release/runberth-app
+    dst: /usr/bin/runberth-app
+    file_info:
+      mode: 0755
+  - src: app/packaging/linux/runberth-app.desktop
+    dst: /usr/share/applications/runberth-app.desktop
+  # The app icon, rendered from app/assets/runberth-icon.png for the macOS app.
+  - src: app/macos/Runberth/Assets.xcassets/AppIcon.appiconset/icon_256x256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/runberth-app.png
+  - src: app/macos/Runberth/Assets.xcassets/AppIcon.appiconset/icon_512x512.png
+    dst: /usr/share/icons/hicolor/512x512/apps/runberth-app.png
+  - src: docs/desktop-app.md
+    dst: /usr/share/doc/runberth-app/README.md
+
+overrides:
+  deb:
+    depends:
+      - libglib2.0-0 | libglib2.0-0t64
+      - libjson-glib-1.0-0
+      - openssh-client
+    recommends:
+      - libsecret-tools
+  # Shared-library names rather than package names, which differ between
+  # Fedora and openSUSE. "(64bit)" is RPM's marker for 64-bit libraries.
+  rpm:
+    depends:
+      - libglib-2.0.so.0()(64bit)
+      - libgio-2.0.so.0()(64bit)
+      - libgobject-2.0.so.0()(64bit)
+      - libjson-glib-1.0.so.0()(64bit)
+      - /usr/bin/ssh
