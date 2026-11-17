@@ -6,7 +6,7 @@ The Runberth app puts your server in the macOS menu bar or the Linux tray. It sh
 - every connected repository, with its latest workflow runs and the jobs of runs in progress, including the runner each job runs on;
 - a notification when a run finishes, which opens the run on GitHub when clicked.
 
-The icon is a boat in its berth. A dot appears in the berth's entrance while jobs run, with the number of runs in progress beside the icon on macOS and Ubuntu, and an exclamation mark when a repository's latest run failed. While the server is unreachable, the menu says so.
+The icon is a boat in its berth, with a badge for the server's state: a turning spinner while jobs run, with the number of runs in progress beside the icon on macOS and Ubuntu, a check when every repository's latest run passed, an exclamation mark when one failed, and a cross while the server is unreachable. Without a badge, the app is connecting or has no results yet. On macOS the badges are coloured; on Linux they follow the panel's colour.
 
 The app only reads. It changes nothing on the server or in GitHub.
 

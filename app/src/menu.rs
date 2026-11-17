@@ -164,7 +164,8 @@ fn run_label_short(run: &Run, now: i64) -> String {
     }
 }
 
-/// The tray's icon state: offline, running, failed, or idle.
+/// The tray's icon state: offline, running, failed, success when every
+/// repository's latest run passed, or idle when there is nothing to report.
 fn icon(view: &View) -> (&'static str, usize) {
     let active = view
         .repos
@@ -181,12 +182,23 @@ fn icon(view: &View) -> (&'static str, usize) {
     if active > 0 || held {
         return ("running", active);
     }
-    let latest_failed = view
+    let latest: Vec<&Run> = view
         .repos
         .iter()
         .filter_map(|repo| repo.runs.as_ref().ok()?.first())
-        .any(failed);
-    (if latest_failed { "failed" } else { "idle" }, 0)
+        .collect();
+    let state = if latest.iter().any(|run| failed(run)) {
+        "failed"
+    } else if !latest.is_empty()
+        && latest
+            .iter()
+            .all(|run| run.conclusion.as_deref() == Some("success"))
+    {
+        "success"
+    } else {
+        "idle"
+    };
+    (state, 0)
 }
 
 pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
@@ -290,6 +302,7 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
         "running" => "Runberth — a job is running".to_owned(),
         "failed" => "Runberth — a recent run failed".to_owned(),
+        "success" => "Runberth — the latest runs passed".to_owned(),
         _ => "Runberth — idle".to_owned(),
     };
     let menu = json!({
@@ -361,7 +374,8 @@ mod tests {
             Some(Ok(status(vec![]))),
             vec![run(1, "completed", Some("success"))],
         ));
-        assert_eq!(menu["icon"], "idle");
+        assert_eq!(menu["icon"], "success");
+        assert_eq!(menu["tooltip"], "Runberth — the latest runs passed");
         assert_eq!(menu["badge"], "");
         let top = labels(&menu["items"]);
         assert_eq!(top[0], "ubuntu@192.0.2.1 · Runberth 0.2.0");
@@ -419,6 +433,18 @@ mod tests {
         assert_eq!(repo[0], "Running on the server for 2m");
         assert_eq!(repo[2], "▶ CI · main · running 9m");
         assert_eq!(repo[3], "    check — in progress on runberth-r");
+    }
+
+    #[test]
+    fn a_connected_server_without_results_is_idle() {
+        let (menu, _) = build(&view(Some(Ok(status(vec![]))), vec![]));
+        assert_eq!(menu["icon"], "idle");
+        let cancelled = build(&view(
+            Some(Ok(status(vec![]))),
+            vec![run(1, "completed", Some("cancelled"))],
+        ))
+        .0;
+        assert_eq!(cancelled["icon"], "idle");
     }
 
     #[test]

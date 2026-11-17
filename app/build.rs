@@ -6,13 +6,15 @@ fn main() {
     let mut libraries = Vec::new();
     match target.as_str() {
         "macos" => {
-            // The menu bar's template images, rendered from the tray SVGs by
-            // scripts/generate-tray-icons.swift.
+            // The menu bar icon's layers, from scripts/generate-tray-icons.swift.
             let mut header = String::new();
             for (name, file) in [
-                ("tray_idle", "assets/tray.png"),
-                ("tray_running", "assets/tray-running.png"),
-                ("tray_failed", "assets/tray-failed.png"),
+                ("tray_glyph", "assets/tray/glyph.png"),
+                ("tray_glyph_cut", "assets/tray/glyph-cut.png"),
+                ("tray_success", "assets/tray/badge-success.png"),
+                ("tray_failed", "assets/tray/badge-failed.png"),
+                ("tray_offline", "assets/tray/badge-offline.png"),
+                ("tray_running", "assets/tray/badge-running.png"),
             ] {
                 println!("cargo:rerun-if-changed={file}");
                 let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("Missing {file}: {e}"));

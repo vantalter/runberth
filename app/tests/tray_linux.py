@@ -183,9 +183,11 @@ try:
         check(any("check — in progress on runberth-r" in label for label in shown), "the job and its runner")
         item = lambda name: call(owner, "/StatusNotifierItem", "org.freedesktop.DBus.Properties", "Get",
                                  GLib.Variant("(ss)", ("org.kde.StatusNotifierItem", name)))[0]
-        check(item("IconName") == "runberth-tray-running-symbolic", "the running icon")
+        running = item("IconName")
+        check(running.startswith("runberth-tray-running-"), f"the running icon: {running}")
+        check(wait(lambda: item("IconName") != running, 3), "the running icon turns")
         theme = Path(item("IconThemePath"))
-        check((theme / "hicolor/scalable/apps/runberth-tray-running-symbolic.svg").is_file(),
+        check((theme / "hicolor/scalable/apps/runberth-tray-running-0-symbolic.svg").is_file(),
               "the icon theme holds the tray icons")
         check(item("XAyatanaLabel") == "1", "the running count beside the icon")
 
@@ -197,7 +199,7 @@ try:
             check(summary == "✓ r: CI passed", f"notification title: {summary}")
             check(body == "main · Add a page · 4m", f"notification body: {body}")
             check(actions == ["default", "Open"], "the notification opens the run")
-        check(wait(lambda: item("IconName") == "runberth-tray-symbolic", 10), "the idle icon")
+        check(wait(lambda: item("IconName") == "runberth-tray-success-symbolic", 10), "the passed icon")
 
         refresh = find(menu(owner), "Refresh Now")
         check(refresh is not None, "a Refresh Now item")

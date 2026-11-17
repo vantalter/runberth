@@ -393,19 +393,33 @@ fn poll(receiver: Receiver<Wake>) {
     }
 }
 
-/// The tray's symbolic icons, as a small icon theme for the tray host: GNOME
-/// recolours symbolic icons for the panel, and KDE through ColorScheme-Text.
+/// The tray's symbolic icons, as a small icon theme for the tray host, from
+/// scripts/generate-tray-icons.swift. GNOME recolours them for the panel, and
+/// KDE through ColorScheme-Text.
 #[cfg(target_os = "linux")]
-const TRAY_ICONS: [(&str, &str); 3] = [
-    ("runberth-tray-symbolic.svg", include_str!("../assets/tray.svg")),
-    (
-        "runberth-tray-running-symbolic.svg",
-        include_str!("../assets/tray-running.svg"),
-    ),
-    (
-        "runberth-tray-failed-symbolic.svg",
-        include_str!("../assets/tray-failed.svg"),
-    ),
+macro_rules! tray_icons {
+    ($($name:literal),* $(,)?) => {
+        [$((
+            concat!("runberth-tray", $name, "-symbolic.svg"),
+            include_str!(concat!("../assets/tray/linux/runberth-tray", $name, "-symbolic.svg")),
+        )),*]
+    };
+}
+
+#[cfg(target_os = "linux")]
+const TRAY_ICONS: [(&str, &str); 12] = tray_icons![
+    "",
+    "-success",
+    "-failed",
+    "-offline",
+    "-running-0",
+    "-running-1",
+    "-running-2",
+    "-running-3",
+    "-running-4",
+    "-running-5",
+    "-running-6",
+    "-running-7",
 ];
 
 #[cfg(target_os = "linux")]

@@ -75,14 +75,27 @@ static const char *xml =
     "<signal name='ItemsPropertiesUpdated'><arg type='a(ia{sv})'/><arg type='a(ias)'/></signal>"
     "</interface></node>";
 
-/* The berth and boat from icon_theme_path; without it, common theme icons. */
+/* The spinner's frame while jobs run, advanced by spin_timer. */
+static guint spin_frame;
+static guint spin_timer;
+
+/* The berth and boat from icon_theme_path, with a badge for the state; see
+ * scripts/generate-tray-icons.swift. Without the theme, common theme icons. */
 static const char *icon_name(void) {
+    static char name[64];
     gboolean own = icon_theme_path != NULL;
-    if (!g_strcmp0(icon_state, "running"))
-        return own ? "runberth-tray-running-symbolic" : "emblem-synchronizing-symbolic";
+    if (!g_strcmp0(icon_state, "running")) {
+        if (!own)
+            return "emblem-synchronizing-symbolic";
+        g_snprintf(name, sizeof name, "runberth-tray-running-%u-symbolic", spin_frame);
+        return name;
+    }
     if (!g_strcmp0(icon_state, "failed"))
         return own ? "runberth-tray-failed-symbolic" : "dialog-warning-symbolic";
-    // An unreachable server keeps the idle icon; the menu and tooltip say so.
+    if (!g_strcmp0(icon_state, "success"))
+        return own ? "runberth-tray-success-symbolic" : "emblem-ok-symbolic";
+    if (!g_strcmp0(icon_state, "offline"))
+        return own ? "runberth-tray-offline-symbolic" : "network-offline-symbolic";
     return own ? "runberth-tray-symbolic" : "network-server-symbolic";
 }
 
@@ -337,6 +350,25 @@ static void watcher_vanished(GDBusConnection *connection, const gchar *name, gpo
     fprintf(stderr, "runberth-app: no StatusNotifier tray host; on GNOME, enable the AppIndicator extension\n");
 }
 
+static gboolean spin(gpointer data) {
+    (void)data;
+    spin_frame = (spin_frame + 1) % 8;
+    item_signal("NewIcon", NULL);
+    return G_SOURCE_CONTINUE;
+}
+
+/* Turns the spinner four frames a second while jobs run: each frame is a
+ * NewIcon the tray host redraws, so it stays slower than on macOS. */
+static void animate(gboolean running) {
+    if (running && !spin_timer && icon_theme_path)
+        spin_timer = g_timeout_add(250, spin, NULL);
+    else if (!running && spin_timer) {
+        g_source_remove(spin_timer);
+        spin_timer = 0;
+        spin_frame = 0;
+    }
+}
+
 static gboolean apply_menu(gpointer data) {
     char *json = data;
     if (!g_strcmp0(json, menu_json)) {
@@ -372,8 +404,10 @@ static gboolean apply_menu(gpointer data) {
     g_free(badge);
     badge = label;
     // Signal only what changed: each NewIcon makes the host redraw the icon.
-    if (icon_changed)
+    if (icon_changed) {
+        animate(!g_strcmp0(icon_state, "running"));
         item_signal("NewIcon", NULL);
+    }
     if (tip_changed || icon_changed)
         item_signal("NewToolTip", NULL);
     if (label_changed)

@@ -27,6 +27,10 @@ static void emit(NSString *kind, NSString *value) {
 @property dispatch_source_t interruptSignal;
 /* SPUStandardUpdaterController when Sparkle is present, otherwise nil. */
 @property id updaterController;
+/* The icon state from Rust, and the spinner's turn while jobs run. */
+@property NSString *iconState;
+@property CGFloat spin;
+@property NSTimer *spinTimer;
 /* Notifications need an app bundle; a bare cargo build has none. */
 @property BOOL canNotify;
 @end
@@ -36,29 +40,56 @@ static Settings *settings;
 
 static Tray *tray;
 
-/* Template images: AppKit inks them for the menu bar's appearance. */
-static NSImage *template(const unsigned char *png, size_t length) {
+static NSImage *layer(const unsigned char *png, size_t length) {
     NSImage *image = [[NSImage alloc] initWithData:[NSData dataWithBytes:png length:length]];
     image.size = NSMakeSize(18, 18);
-    image.template = YES;
-    image.accessibilityDescription = @"Runberth";
     return image;
 }
 
-/* The berth and boat, with a dot while jobs run or "!" after a failed run.
- * An unreachable server keeps the idle icon; the menu and tooltip say so. */
-static NSImage *trayIcon(NSString *state) {
-    static NSImage *idle, *running, *failed;
-    if (!idle) {
-        idle = template(tray_idle, sizeof tray_idle);
-        running = template(tray_running, sizeof tray_running);
-        failed = template(tray_failed, sizeof tray_failed);
+/* The berth and boat in the menu bar's text colour, with a coloured badge in
+ * the berth's entrance: a grey cross when the server is unreachable, a green
+ * check when the latest runs passed, a red "!" when one failed, and an orange
+ * spinner, turned `angle` degrees, while jobs run. "idle" has no badge. */
+static NSImage *trayIcon(NSString *state, CGFloat angle) {
+    static NSImage *glyph, *cut, *success, *failed, *offline, *running;
+    if (!glyph) {
+        glyph = layer(tray_glyph, sizeof tray_glyph);
+        cut = layer(tray_glyph_cut, sizeof tray_glyph_cut);
+        success = layer(tray_success, sizeof tray_success);
+        failed = layer(tray_failed, sizeof tray_failed);
+        offline = layer(tray_offline, sizeof tray_offline);
+        running = layer(tray_running, sizeof tray_running);
     }
-    if ([state isEqualToString:@"running"])
-        return running;
-    if ([state isEqualToString:@"failed"])
-        return failed;
-    return idle;
+    NSDictionary *badges = @{@"success" : success, @"failed" : failed, @"offline" : offline, @"running" : running};
+    NSImage *badge = badges[state];
+    NSImage *shape = badge ? cut : glyph;
+    // Not a template, so the badge keeps its colour: the handler tints the
+    // glyph for the appearance it is drawn in, light or dark menu bar.
+    NSImage *icon = [NSImage imageWithSize:NSMakeSize(18, 18)
+                                   flipped:NO
+                            drawingHandler:^BOOL(NSRect rect) {
+                              CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+                              CGContextBeginTransparencyLayer(context, NULL);
+                              [shape drawInRect:rect];
+                              [NSColor.labelColor set];
+                              NSRectFillUsingOperation(rect, NSCompositingOperationSourceIn);
+                              CGContextEndTransparencyLayer(context);
+                              if (!badge)
+                                  return YES;
+                              if (angle != 0) {
+                                  // The badge's centre on the 24-unit grid, (19.5, 19), at 18 points.
+                                  NSAffineTransform *turn = [NSAffineTransform transform];
+                                  [turn translateXBy:14.625 yBy:3.75];
+                                  [turn rotateByDegrees:-angle];
+                                  [turn translateXBy:-14.625 yBy:-3.75];
+                                  [turn concat];
+                              }
+                              [badge drawInRect:rect];
+                              return YES;
+                            }];
+    icon.cacheMode = NSImageCacheNever;
+    icon.accessibilityDescription = @"Runberth";
+    return icon;
 }
 
 
@@ -578,7 +609,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     NSApp.mainMenu = mainMenu;
     self.status = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     self.status.autosaveName = @"dev.runberth.app.status";
-    self.status.button.image = trayIcon(@"offline");
+    self.status.button.image = trayIcon(@"idle", 0);
     self.status.button.imagePosition = NSImageOnly;
     self.status.button.toolTip = @"Runberth — connecting";
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Runberth"];
@@ -628,6 +659,27 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         }
     }
 }
+- (void)showIcon:(NSString *)state {
+    if ([state isEqualToString:self.iconState])
+        return;
+    self.iconState = state;
+    [self.spinTimer invalidate];
+    self.spinTimer = nil;
+    self.status.button.image = trayIcon(state, 0);
+    if (![state isEqualToString:@"running"])
+        return;
+    // About 1.2 seconds a turn; the timer stops when the jobs do.
+    self.spin = 0;
+    self.spinTimer = [NSTimer timerWithTimeInterval:0.1
+                                            repeats:YES
+                                              block:^(NSTimer *timer) {
+                                                (void)timer;
+                                                self.spin = fmod(self.spin + 30, 360);
+                                                self.status.button.image = trayIcon(@"running", self.spin);
+                                              }];
+    // Common modes keep it turning while the menu is open.
+    [[NSRunLoop mainRunLoop] addTimer:self.spinTimer forMode:NSRunLoopCommonModes];
+}
 - (void)apply:(NSString *)json {
     if ([json isEqualToString:self.menuJSON])
         return;
@@ -637,8 +689,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     if (![spec isKindOfClass:NSDictionary.class])
         return;
     self.menuJSON = json;
-    NSString *state = spec[@"icon"];
-    self.status.button.image = trayIcon(state);
+    [self showIcon:spec[@"icon"]];
     NSString *badge = spec[@"badge"];
     self.status.button.title = badge.length ? badge : @"";
     self.status.button.imagePosition = badge.length ? NSImageLeft : NSImageOnly;
