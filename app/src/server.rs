@@ -72,9 +72,20 @@ impl Status {
 /// ssh's %C token adds 41.
 const SOCKET_PATH_MAX: usize = 103;
 
-/// The ssh arguments for one status request. A shared connection, kept for
-/// two minutes, saves a handshake on every refresh, where its socket path fits.
-pub fn ssh_args(server: &Server, socket_dir: &Path) -> Vec<String> {
+/// Whether an argument can pass through ssh's remote command line, which the
+/// server's shell splits: repository names, options, and numbers only.
+pub fn safe_argument(argument: &str) -> bool {
+    !argument.is_empty()
+        && argument
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/-=".contains(c))
+}
+
+/// The ssh arguments that run `sudo -n runberth REMOTE...` on the server. A
+/// shared connection, kept for two minutes, saves a handshake on every
+/// refresh, where its socket path fits. `terminal` allocates one for
+/// commands that redraw, such as `status --watch`.
+pub fn ssh_args(server: &Server, socket_dir: &Path, remote: &[&str], terminal: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "BatchMode=yes",
         "ConnectTimeout=10",
@@ -99,27 +110,57 @@ pub fn ssh_args(server: &Server, socket_dir: &Path) -> Vec<String> {
         args.extend(["-i".into(), expand(key).display().to_string()]);
         args.extend(["-o".into(), "IdentitiesOnly=yes".into()]);
     }
-    args.push(format!("{}@{}", server.user, server.host));
-    args.extend(["sudo", "-n", RUNBERTH, "status", "--json"].map(str::to_owned));
+    if terminal {
+        args.push("-t".into());
+    }
+    args.push(format!("{}@{}", server.user, server.host.trim()));
+    args.extend(["sudo", "-n", RUNBERTH].map(str::to_owned));
+    args.extend(remote.iter().map(|argument| (*argument).to_owned()));
     args
 }
 
-pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
+/// The command that runs `runberth REMOTE...` with sudo on the server: over
+/// ssh, or directly when the server is this computer. The install script's
+/// sudoers rule allows connect, disconnect, cleanup, status, and logs.
+pub fn command(
+    server: &Server,
+    socket_dir: &Path,
+    remote: &[&str],
+    terminal: bool,
+) -> Result<Command, String> {
+    if let Some(unsafe_argument) = remote.iter().find(|argument| !safe_argument(argument)) {
+        return Err(format!("Unexpected argument {unsafe_argument:?}"));
+    }
     if server.is_local() {
-        return fetch_local();
+        if !Path::new(RUNBERTH).exists() {
+            return Err(if cfg!(target_os = "macos") {
+                "Runberth servers run on Linux; enter your server's address instead of localhost".into()
+            } else {
+                format!("Runberth is not installed on this computer ({RUNBERTH})")
+            });
+        }
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg(RUNBERTH).args(remote);
+        return Ok(command);
     }
     std::fs::create_dir_all(socket_dir)
         .map_err(|error| format!("Cannot create {}: {error}", socket_dir.display()))?;
     // RUNBERTH_APP_SSH replaces ssh in tests/tray_linux.py.
     let ssh = std::env::var_os("RUNBERTH_APP_SSH").unwrap_or_else(|| "/usr/bin/ssh".into());
-    let output = Command::new(ssh)
-        .args(ssh_args(server, socket_dir))
+    let mut command = Command::new(ssh);
+    command.args(ssh_args(server, socket_dir, remote, terminal));
+    Ok(command)
+}
+
+pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
+    let output = command(server, socket_dir, &["status", "--json"], false)?
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("Cannot run ssh: {error}"))?;
     if !output.status.success() {
         return Err(failure(
-            &server.host,
+            server.host.trim(),
+            "status",
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
         ));
@@ -127,32 +168,9 @@ pub fn fetch(server: &Server, socket_dir: &Path) -> Result<Status, String> {
     Status::parse(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Runberth on this computer, with the same passwordless sudo rule as over ssh.
-fn fetch_local() -> Result<Status, String> {
-    if !Path::new(RUNBERTH).exists() {
-        return Err(if cfg!(target_os = "macos") {
-            "Runberth servers run on Linux; enter your server's address instead of localhost".into()
-        } else {
-            format!("Runberth is not installed on this computer ({RUNBERTH})")
-        });
-    }
-    let output = Command::new("sudo")
-        .args(["-n", RUNBERTH, "status", "--json"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("Cannot run sudo: {error}"))?;
-    if !output.status.success() {
-        return Err(failure(
-            "localhost",
-            output.status.code(),
-            &String::from_utf8_lossy(&output.stderr),
-        ));
-    }
-    Status::parse(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Why a status request failed, from ssh's exit code and error output.
-fn failure(host: &str, code: Option<i32>, stderr: &str) -> String {
+/// Why `runberth COMMAND` failed on the server, from ssh's exit code and the
+/// error output.
+pub fn failure(host: &str, command: &str, code: Option<i32>, stderr: &str) -> String {
     if stderr.contains("Usage: runberth") {
         return "The server's Runberth is too old for this app; update it".into();
     }
@@ -164,8 +182,12 @@ fn failure(host: &str, code: Option<i32>, stderr: &str) -> String {
         // ssh exits with 255 for its own errors, such as a refused connection.
         (Some(255), Some(reason)) => format!("{host}: {reason}"),
         (Some(255), None) => format!("Cannot connect to {host}"),
-        (_, Some(reason)) => format!("runberth status failed: {reason}"),
-        (_, None) => "runberth status failed".into(),
+        // The server prefixes its errors with "runberth COMMAND: ".
+        (_, Some(reason)) => reason
+            .strip_prefix(&format!("runberth {command}: "))
+            .unwrap_or(reason)
+            .to_owned(),
+        (_, None) => format!("runberth {command} failed"),
     }
 }
 
@@ -198,15 +220,20 @@ mod tests {
     #[test]
     fn failures_are_explained() {
         let old = "runberth status: Usage: runberth COMMAND\n\nHost commands (on the VPS):\n";
-        assert!(failure("h", Some(1), old).contains("too old"));
+        assert!(failure("h", "status", Some(1), old).contains("too old"));
         let sudo = "sudo: a password is required\n";
-        assert!(failure("h", Some(1), sudo).contains("--sudoers"));
+        assert!(failure("h", "status", Some(1), sudo).contains("--sudoers"));
         let refused = "ssh: connect to host h port 22: Connection refused\n";
         assert_eq!(
-            failure("h", Some(255), refused),
+            failure("h", "status", Some(255), refused),
             "h: ssh: connect to host h port 22: Connection refused"
         );
-        assert_eq!(failure("h", Some(255), ""), "Cannot connect to h");
+        assert_eq!(failure("h", "status", Some(255), ""), "Cannot connect to h");
+        let refused_by_github = "runberth connect: GitHub answered 403 for vantalter/r\n";
+        assert_eq!(
+            failure("h", "connect", Some(1), refused_by_github),
+            "GitHub answered 403 for vantalter/r"
+        );
     }
 
     #[test]
@@ -217,15 +244,44 @@ mod tests {
             port: 2222,
             key: Some("/keys/vps".into()),
         };
-        let args = ssh_args(&server, Path::new("/cache/ssh"));
+        let args = ssh_args(&server, Path::new("/cache/ssh"), &["status", "--json"], false);
         let joined = args.join(" ");
         assert!(joined.contains("BatchMode=yes"));
         assert!(joined.contains("ControlPath=/cache/ssh/%C"));
         assert!(joined.contains("-p 2222 -i /keys/vps -o IdentitiesOnly=yes ubuntu@192.0.2.1"));
         assert!(joined.ends_with("sudo -n /opt/runberth/bin/runberth status --json"));
         let long = Path::new("/a/very/long/cache/directory/that/would/not/fit/in/a/unix/socket/path");
-        assert!(!ssh_args(&server, long).join(" ").contains("ControlPath"));
+        assert!(
+            !ssh_args(&server, long, &[], false)
+                .join(" ")
+                .contains("ControlPath")
+        );
         let agent = Server { key: None, ..server };
-        assert!(!ssh_args(&agent, Path::new("/c")).contains(&"-i".to_owned()));
+        assert!(!ssh_args(&agent, Path::new("/c"), &[], false).contains(&"-i".to_owned()));
+        let watch = ssh_args(&agent, Path::new("/c"), &["status", "--watch", "5"], true).join(" ");
+        assert!(watch.ends_with("-t ubuntu@192.0.2.1 sudo -n /opt/runberth/bin/runberth status --watch 5"));
+    }
+
+    #[test]
+    fn only_plain_arguments_reach_the_server() {
+        for argument in [
+            "connect",
+            "vantalter/my-repo.js",
+            "--lines",
+            "200",
+            "--github-removed",
+        ] {
+            assert!(safe_argument(argument), "{argument}");
+        }
+        for argument in ["", "a b", "x;rm", "$(id)", "'q'", "a\nb"] {
+            assert!(!safe_argument(argument), "{argument:?}");
+        }
+        let server = Server {
+            host: "h".into(),
+            user: "u".into(),
+            port: 22,
+            key: None,
+        };
+        assert!(command(&server, Path::new("/tmp"), &["logs", "o/r;id"], false).is_err());
     }
 }

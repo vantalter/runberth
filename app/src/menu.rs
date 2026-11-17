@@ -17,6 +17,10 @@ pub enum Action {
     Settings,
     Login,
     CheckUpdates,
+    /// Register and start the repository's runner.
+    Connect(String),
+    /// Remove the repository's runner.
+    Disconnect(String),
     Quit,
 }
 
@@ -41,6 +45,11 @@ pub struct View {
     /// Sparkle handles updates in the macOS app.
     pub sparkle: bool,
     pub update: updates::Status,
+    /// Connections and disconnections in progress: repository and verb,
+    /// such as "Connecting".
+    pub operations: Vec<(String, String)>,
+    /// Private repositories that could be connected, or None without a token.
+    pub candidates: Option<Vec<String>>,
     pub now: i64,
 }
 
@@ -103,7 +112,13 @@ fn job_label(job: &Job) -> String {
     }
 }
 
-fn repo_item(builder: &mut Builder, view: &RepoView, server: Option<&Status>, now: i64) -> Value {
+fn repo_item(
+    builder: &mut Builder,
+    view: &RepoView,
+    server: Option<&Status>,
+    operation: Option<&str>,
+    now: i64,
+) -> Value {
     let name = short(&view.repo);
     let holder = server.and_then(|status| status.holder(&view.repo));
     let mut children = Vec::new();
@@ -152,7 +167,45 @@ fn repo_item(builder: &mut Builder, view: &RepoView, server: Option<&Status>, no
         "Open Actions on GitHub",
         Action::Open(format!("https://github.com/{}/actions", view.repo)),
     ));
+    if let Some(verb) = operation {
+        items.push(builder.info(format!("{verb}…")));
+        return builder.submenu(format!("{name} — {}…", verb.to_lowercase()), items);
+    }
+    // A second item to choose confirms it: disconnecting cannot be undone.
+    let confirm = vec![
+        builder.item(
+            format!("Disconnect {}", view.repo),
+            Action::Disconnect(view.repo.clone()),
+        ),
+        builder.info("Removes its runner from the server and GitHub"),
+    ];
+    items.push(builder.submenu("Disconnect", confirm));
     builder.submenu(label, items)
+}
+
+/// Private repositories to connect, which must have .github/runberth.json.
+fn connect_item(builder: &mut Builder, view: &View) -> Value {
+    let busy = |repo: &String| view.operations.iter().any(|(name, _)| name == repo);
+    let connected = |repo: &String| view.repos.iter().any(|connected| connected.repo == *repo);
+    let mut items = Vec::new();
+    match &view.candidates {
+        None => items.push(builder.info("Listing repositories needs a GitHub token")),
+        Some(candidates) => {
+            let available: Vec<&String> = candidates
+                .iter()
+                .filter(|repo| !connected(repo) && !busy(repo))
+                .collect();
+            if available.is_empty() {
+                items.push(builder.info("No other private repositories"));
+            }
+            for repo in available {
+                items.push(builder.item(repo.clone(), Action::Connect(repo.clone())));
+            }
+            items.push(builder.separator());
+            items.push(builder.info("Each needs .github/runberth.json on its default branch"));
+        }
+    }
+    builder.submenu("Connect Repository", items)
 }
 
 /// "CI · running 9m" or "CI passed · 5m ago".
@@ -254,7 +307,20 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         items.push(builder.info(empty));
     }
     for repo in &view.repos {
-        items.push(repo_item(&mut builder, repo, status, view.now));
+        let operation = view
+            .operations
+            .iter()
+            .find(|(name, _)| *name == repo.repo)
+            .map(|(_, verb)| verb.as_str());
+        items.push(repo_item(&mut builder, repo, status, operation, view.now));
+    }
+    for (repo, verb) in &view.operations {
+        if !view.repos.iter().any(|connected| connected.repo == *repo) {
+            items.push(builder.info(format!("{verb} {repo}…")));
+        }
+    }
+    if status.is_some() {
+        items.push(connect_item(&mut builder, view));
     }
     items.push(builder.separator());
     items.push(builder.item("Refresh Now", Action::Refresh));
@@ -355,6 +421,8 @@ mod tests {
             login: 0,
             sparkle: false,
             update: updates::Status::Idle,
+            operations: vec![],
+            candidates: Some(vec!["o/r".into(), "o/new".into()]),
             now: epoch("2026-11-16T13:40:00Z").unwrap(),
         }
     }
@@ -445,6 +513,57 @@ mod tests {
         ))
         .0;
         assert_eq!(cancelled["icon"], "idle");
+    }
+
+    fn find<'a>(items: &'a Value, label: &str) -> &'a Value {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == label)
+            .unwrap_or_else(|| panic!("{label}"))
+    }
+
+    #[test]
+    fn repositories_connect_and_disconnect_from_the_menu() {
+        let (menu, actions) = build(&view(Some(Ok(status(vec![]))), vec![]));
+        // Connected repositories are not offered again.
+        let connect = find(&menu["items"], "Connect Repository");
+        let offered = labels(&connect["children"]);
+        assert_eq!(offered[0], "o/new");
+        assert!(!offered.contains(&"o/r".to_owned()));
+        let id = connect["children"][0]["id"].as_u64().unwrap() as u32;
+        assert_eq!(actions[&id], Action::Connect("o/new".into()));
+        // Disconnecting takes a second, confirming choice.
+        let repo = &menu["items"][4]["children"];
+        let disconnect = find(repo, "Disconnect");
+        assert_eq!(labels(&disconnect["children"])[0], "Disconnect o/r");
+        let id = disconnect["children"][0]["id"].as_u64().unwrap() as u32;
+        assert_eq!(actions[&id], Action::Disconnect("o/r".into()));
+    }
+
+    #[test]
+    fn operations_in_progress_show_in_the_menu() {
+        let mut busy = view(Some(Ok(status(vec![]))), vec![]);
+        busy.operations = vec![
+            ("o/r".into(), "Disconnecting".into()),
+            ("o/new".into(), "Connecting".into()),
+        ];
+        let (menu, _) = build(&busy);
+        let top = labels(&menu["items"]);
+        assert_eq!(top[4], "r — disconnecting…");
+        assert!(top.contains(&"Connecting o/new…".to_owned()));
+        assert!(!labels(&menu["items"][4]["children"]).contains(&"Disconnect".to_owned()));
+        assert!(
+            labels(&find(&menu["items"], "Connect Repository")["children"])
+                .contains(&"No other private repositories".to_owned())
+        );
+        busy.candidates = None;
+        let (menu, _) = build(&busy);
+        assert_eq!(
+            labels(&find(&menu["items"], "Connect Repository")["children"])[0],
+            "Listing repositories needs a GitHub token"
+        );
     }
 
     #[test]

@@ -21,6 +21,11 @@ contents:
     dst: /usr/bin/runberth-app
     file_info:
       mode: 0755
+  # `runberth connect|disconnect|status|logs` on this computer: the app's
+  # binary runs them on the server in its settings.
+  - src: /usr/bin/runberth-app
+    dst: /usr/bin/runberth
+    type: symlink
   - src: app/packaging/linux/runberth-app.desktop
     dst: /usr/share/applications/runberth-app.desktop
   # The app icon, rendered from app/assets/runberth-icon.png for the macOS app.

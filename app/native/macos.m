@@ -283,9 +283,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.tokenMessage = noteLabel();
     self.tokenMessage.hidden = YES;
     NSTextField *tokenNote = noteLabel();
-    tokenNote.stringValue = @"Needs read access to Actions on the connected repositories: a fine-grained "
-                            @"token with Actions: Read, or a classic token with the repo scope. It is kept "
-                            @"in your login keychain.";
+    tokenNote.stringValue = @"Showing runs needs Actions: Read. Connecting and disconnecting repositories "
+                            @"also needs Administration: Read and write, and Contents: Read. A classic "
+                            @"token with the repo scope covers both. It is kept in your login keychain.";
     self.tokenCommand = textField(@"gh auth token --user NAME", 260, self);
     NSTextField *commandNote = noteLabel();
     commandNote.stringValue = @"Optional. When set, the app runs this command for the token instead of "

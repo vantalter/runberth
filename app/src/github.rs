@@ -56,6 +56,12 @@ struct Jobs {
     jobs: Vec<Job>,
 }
 
+#[derive(Deserialize)]
+struct Repository {
+    full_name: String,
+    archived: bool,
+}
+
 pub struct GitHub {
     agent: ureq::Agent,
     token: String,
@@ -94,6 +100,20 @@ impl GitHub {
             .into_json()
             .map_err(|_| "Unexpected answer from GitHub".to_owned())?;
         Ok(runs.workflow_runs)
+    }
+
+    /// The token owner's private repositories, most recently pushed first:
+    /// those Runberth can connect.
+    pub fn private_repositories(&self) -> Result<Vec<String>, String> {
+        let repositories: Vec<Repository> = self
+            .get("/user/repos?visibility=private&affiliation=owner&sort=pushed&per_page=30")?
+            .into_json()
+            .map_err(|_| "Unexpected answer from GitHub".to_owned())?;
+        Ok(repositories
+            .into_iter()
+            .filter(|repository| !repository.archived)
+            .map(|repository| repository.full_name)
+            .collect())
     }
 
     pub fn jobs(&self, repo: &str, run: u64) -> Result<Vec<Job>, String> {

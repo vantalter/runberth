@@ -14,7 +14,7 @@ The app only reads. It changes nothing on the server or in GitHub.
 
 - A server running Runberth 0.2.0 or later, installed with `--sudoers`. The app runs `sudo -n /opt/runberth/bin/runberth status --json` over SSH, which that rule allows without a password.
 - SSH access from your computer to the server with a key, as for `scripts/vps.sh`.
-- A GitHub token that can read Actions on the connected repositories: a fine-grained token with **Actions: Read** on them, or a classic token with the `repo` scope. Without a token the app still shows the server and its repositories, but not runs or results.
+- A GitHub token. To show runs and results it needs **Actions: Read** on the connected repositories. To connect and disconnect repositories from the app or its `runberth` command, it also needs **Administration: Read and write** and **Contents: Read**, as `connect` registers a runner and reads the repository's manifest. A fine-grained token with those permissions on your private repositories does both, as does a classic token with the `repo` scope. Without a token the app still shows the server and its repositories, but not runs or results.
 
 ## Install
 
@@ -71,6 +71,30 @@ secret-tool store --label="Runberth GitHub token" service runberth account githu
 ```
 
 Set `host`, `user`, `port`, and `key` as for `scripts/install-vps.sh`; without `key`, ssh uses your agent and `~/.ssh/config`. When Runberth runs on the same Linux computer as the app, set `host` to `localhost`: on port 22 the app runs `sudo -n /opt/runberth/bin/runberth status --json` itself, without SSH, and the menu names the server **This computer**. That needs the same passwordless sudo rule for your account that `--sudoers` installs. On any other port, such as a virtual machine's forwarded SSH port, `localhost` still connects with ssh. `notifications` is `all`, `failures`, or `off`. The app refreshes every `interval_seconds`, every 10 seconds while runs are in progress, and when you open the menu. It reads the file again on every refresh, so edits apply without a restart. The token is never in this file; on macOS you can also store it from a terminal with `security add-generic-password -s Runberth -a github -w`, which prompts for it.
+
+## Connect and disconnect repositories
+
+**Connect Repository** in the menu lists your private repositories that are not connected yet. Choose one to connect it, as `runberth connect` does on the server: the repository needs `.github/runberth.json` on its default branch, as in [Connect a repository](../README.md#2-connect-a-repository). To disconnect one, open its submenu and choose **Disconnect**, then confirm with **Disconnect OWNER/REPO**. Change its jobs' `runs-on` first, as the [personal account guide](personal-account-setup.md) describes. The menu shows the work in progress, and a notification reports the result or the server's error.
+
+## The runberth command
+
+The app's binary is also a `runberth` command for your computer. It runs Runberth's commands on the server in the app's settings, over SSH or directly for localhost:
+
+```sh
+runberth connect OWNER/REPO
+runberth disconnect OWNER/REPO
+runberth status --watch 5
+runberth logs OWNER/REPO --follow
+```
+
+`connect` and `disconnect` read a GitHub token from stdin when one is piped, as in `gh auth token | runberth connect OWNER/REPO`, and otherwise use the token stored for the app. Run `runberth --help` for the options.
+
+The Linux packages install it as `/usr/bin/runberth`. On macOS, link it from the app once:
+
+```sh
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/Runberth.app/Contents/MacOS/runberth /usr/local/bin/runberth
+```
 
 ## Troubleshooting
 

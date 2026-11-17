@@ -3,6 +3,7 @@
 //! the tray menu, and announces finished runs. The native side (native/)
 //! owns the UI loop, the tray icon, its menu, and notifications.
 
+mod cli;
 mod config;
 mod github;
 mod login;
@@ -16,7 +17,8 @@ mod updates;
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_int};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -38,11 +40,17 @@ static ACTIONS: Mutex<Option<HashMap<u32, Action>>> = Mutex::new(None);
 static WAKE: OnceLock<Mutex<Sender<Wake>>> = OnceLock::new();
 static LOGIN: AtomicI32 = AtomicI32::new(-1);
 static SPARKLE: AtomicBool = AtomicBool::new(false);
+/// Connections and disconnections in progress: repository and verb.
+static OPERATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// Set when the repositories to connect should be listed again.
+static LIST_AGAIN: AtomicBool = AtomicBool::new(false);
 
 /// Refreshes while runs are active are at least this frequent.
 const ACTIVE_INTERVAL: Duration = Duration::from_secs(10);
 const RECENT: Duration = Duration::from_secs(10);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+/// How long the list of repositories to connect is kept.
+const CANDIDATES_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 fn wake(signal: Wake) {
     if let Some(sender) = WAKE.get() {
@@ -85,6 +93,8 @@ fn perform(action: Action) {
         }
         Action::CheckUpdates if SPARKLE.load(Ordering::Relaxed) => unsafe { native::native_check_updates() },
         Action::CheckUpdates => wake(Wake::CheckUpdates),
+        Action::Connect(repo) => start_operation("connect", repo),
+        Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
             wake(Wake::Stop);
             unsafe { native::native_stop() }
@@ -142,6 +152,80 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         }
         "check-updates" => perform(Action::CheckUpdates),
         _ => {}
+    }
+}
+
+/// Connects or disconnects a repository in the background, as `runberth
+/// connect` and `disconnect` do, then announces the result.
+fn start_operation(command: &'static str, repo: String) {
+    let verb = if command == "connect" {
+        "Connecting"
+    } else {
+        "Disconnecting"
+    };
+    {
+        let Ok(mut operations) = OPERATIONS.lock() else {
+            return;
+        };
+        if operations.iter().any(|(name, _)| *name == repo) {
+            return;
+        }
+        operations.push((repo.clone(), verb.to_owned()));
+    }
+    wake(Wake::Refresh);
+    in_background(move || {
+        let result = run_operation(command, &repo);
+        let name = runs::short(&repo);
+        let (title, body) = match (&result, command) {
+            (Ok(()), "connect") => (
+                format!("Connected {name}"),
+                "Its runner waits for jobs on the server".to_owned(),
+            ),
+            (Ok(()), _) => (
+                format!("Disconnected {name}"),
+                "Its runner is removed from the server and GitHub".to_owned(),
+            ),
+            (Err(error), "connect") => (format!("Cannot connect {name}"), error.clone()),
+            (Err(error), _) => (format!("Cannot disconnect {name}"), error.clone()),
+        };
+        native::notify(
+            &title,
+            &body,
+            &format!("https://github.com/{repo}/settings/actions/runners"),
+        );
+        if let Ok(mut operations) = OPERATIONS.lock() {
+            operations.retain(|(name, _)| *name != repo);
+        }
+        LIST_AGAIN.store(true, Ordering::Relaxed);
+        wake(Wake::Refresh);
+    });
+}
+
+fn run_operation(command: &str, repo: &str) -> Result<(), String> {
+    let config = config::load(&config::settings_path())?;
+    let server = config.server().ok_or("No server set")?;
+    let token = token::read(&config)?;
+    let mut child = server::command(server, &config::cache_dir().join("ssh"), &[command, repo], false)?
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run ssh: {error}"))?;
+    if let Some(mut input) = child.stdin.take() {
+        input
+            .write_all(format!("{token}\n").as_bytes())
+            .map_err(|error| format!("Cannot pass the token: {error}"))?;
+    }
+    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(server::failure(
+            server.host.trim(),
+            command,
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stderr),
+        ))
     }
 }
 
@@ -256,6 +340,8 @@ struct Poller {
     update: updates::Status,
     update_checked: Option<Instant>,
     check_updates: bool,
+    /// Private repositories to connect, and when they were listed.
+    candidates: Option<(Instant, Vec<String>)>,
 }
 
 impl Poller {
@@ -284,17 +370,26 @@ impl Poller {
             errors.push("The server account cannot list repositories; reinstall with --sudoers".into());
         }
         let runners = runners.unwrap_or_default();
-        let github = if runners.is_empty() {
-            None
-        } else {
-            match token::read(&config) {
-                Ok(token) => Some(github::GitHub::new(token)),
-                Err(error) => {
+        let github = match token::read(&config) {
+            Ok(token) => Some(github::GitHub::new(token)),
+            Err(error) => {
+                // Without repositories there are no results to miss.
+                if !runners.is_empty() {
                     errors.push(error);
-                    None
                 }
+                None
             }
         };
+        let stale = self
+            .candidates
+            .as_ref()
+            .is_none_or(|(listed, _)| listed.elapsed() >= CANDIDATES_INTERVAL);
+        if LIST_AGAIN.swap(false, Ordering::Relaxed) || stale {
+            self.candidates = github
+                .as_ref()
+                .and_then(|github| github.private_repositories().ok())
+                .map(|list| (Instant::now(), list));
+        }
         let mut repos = Vec::new();
         for runner in runners {
             let runs = match &github {
@@ -341,6 +436,14 @@ impl Poller {
             login: LOGIN.load(Ordering::Relaxed),
             sparkle,
             update: self.update.clone(),
+            operations: OPERATIONS
+                .lock()
+                .map(|operations| operations.clone())
+                .unwrap_or_default(),
+            candidates: github
+                .is_some()
+                .then(|| self.candidates.as_ref().map(|(_, list)| list.clone()))
+                .flatten(),
             now: runs::now(),
         }
     }
@@ -353,6 +456,7 @@ fn poll(receiver: Receiver<Wake>) {
         update: updates::Status::Idle,
         update_checked: None,
         check_updates: false,
+        candidates: None,
     };
     loop {
         let view = poller.refresh();
@@ -440,6 +544,10 @@ fn install_tray_icons() {
 /// Runs the app until it quits; the macOS app's Swift entry point calls this.
 #[unsafe(no_mangle)]
 pub extern "C" fn runberth_app_main() -> c_int {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run(&args) {
+        return code;
+    }
     #[cfg(target_os = "linux")]
     install_tray_icons();
     let status = unsafe { native::native_run() };

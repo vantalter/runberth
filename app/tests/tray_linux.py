@@ -84,6 +84,9 @@ class GitHub(http.server.BaseHTTPRequestHandler):
                               "runner_name": "runberth-r"}]}
         elif self.path.startswith("/repos/o/r/actions/runs"):
             body = {"workflow_runs": [run()]}
+        elif self.path.startswith("/user/repos"):
+            body = [{"full_name": "o/r", "archived": False}, {"full_name": "o/new", "archived": False},
+                    {"full_name": "o/old", "archived": True}]
         else:
             self.send_error(404)
             return
@@ -118,14 +121,24 @@ status = {
 }
 status_file = home / "status.json"
 status_file.write_text(json.dumps(status))
+connected = home / "connected"
 ssh = home / "ssh"
-ssh.write_text(f"#!/bin/sh\ncat '{status_file}'\n")
+# The status for `status --json`; `connect` records its arguments and the
+# token it reads on stdin.
+ssh.write_text(f"""#!/bin/sh
+case "$*" in
+  *"status --json") cat '{status_file}' ;;
+  *" connect o/new") read token; echo "$token|$*" > '{connected}' ;;
+  *) echo "runberth: unexpected $*" >&2; exit 1 ;;
+esac
+""")
 ssh.chmod(0o755)
 
-app = subprocess.Popen([binary], env={
+env = {
     **os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
     "RUNBERTH_APP_SSH": str(ssh), "RUNBERTH_APP_GITHUB_API": f"http://127.0.0.1:{api.server_port}",
-})
+}
+app = subprocess.Popen([binary], env=env)
 context = GLib.MainContext.default()
 
 
@@ -208,6 +221,32 @@ try:
                  GLib.Variant("(isvu)", (refresh[0], "clicked", GLib.Variant("s", ""), 0)))
         time.sleep(1)
         check(len(notifications) == 1, "a finished run is announced once")
+
+        connect = find(menu(owner), "Connect Repository")
+        offered = [label.strip() for label in labels(connect)][1:] if connect else []
+        check("o/new" in offered and "o/r" not in offered and "o/old" not in offered,
+              f"unconnected, unarchived repositories are offered: {offered}")
+        new = find(menu(owner), "o/new")
+        if new:
+            call(owner, "/MenuBar", "com.canonical.dbusmenu", "Event",
+                 GLib.Variant("(isvu)", (new[0], "clicked", GLib.Variant("s", ""), 0)))
+        check(wait(lambda: len(notifications) == 2, 10), "a notification when the repository connects")
+        if len(notifications) == 2:
+            check(notifications[1][3] == "Connected new", f"connect notification: {notifications[1][3]}")
+        sent = connected.read_text().strip() if connected.exists() else ""
+        token, _, command = sent.partition("|")
+        check(token == "test-token", "the token reaches the server on stdin")
+        check("test-token" not in command and command.endswith("/opt/runberth/bin/runberth connect o/new"),
+              f"the server runs connect: {command}")
+        # The same binary is the `runberth` command: a piped token wins.
+        connected.unlink()
+        cli = subprocess.run([binary, "connect", "o/new"], input="cli-token\n", text=True, env=env,
+                             capture_output=True, timeout=20)
+        check(cli.returncode == 0, f"runberth connect exits 0: {cli.stderr}")
+        check(connected.exists() and connected.read_text().startswith("cli-token|"),
+              "runberth connect passes a piped token on stdin")
+        usage = subprocess.run([binary, "connect"], env=env, capture_output=True, text=True, timeout=20)
+        check(usage.returncode == 2 and "Usage: runberth" in usage.stderr, "a mistake prints the usage")
     app.send_signal(signal.SIGTERM)
     check(app.wait(10) == 0, "SIGTERM quits cleanly")
 finally:
