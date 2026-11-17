@@ -13,6 +13,9 @@ unsafe extern "C" {
     #[cfg(target_os = "linux")]
     fn native_set_icon_theme(path: *const c_char);
     pub fn native_has_updater() -> c_int;
+    pub fn native_set_update_checks(enabled: c_int);
+    fn native_show_settings(window_json: *const c_char);
+    fn native_settings_status(status_json: *const c_char);
     pub fn native_check_updates();
 }
 
@@ -31,6 +34,18 @@ pub fn set_icon_theme(path: &std::path::Path) {
 pub fn set_menu(json: &str) {
     let json = cstring(json);
     unsafe { native_set_menu(json.as_ptr()) }
+}
+
+/// Opens the Settings window with its fields; see bridge.h.
+pub fn show_settings(json: &str) {
+    let json = cstring(json);
+    unsafe { native_show_settings(json.as_ptr()) }
+}
+
+/// Thread-safe: updates the Settings window's status lines.
+pub fn settings_status(json: &str) {
+    let json = cstring(json);
+    unsafe { native_settings_status(json.as_ptr()) }
 }
 
 /// Thread-safe, like `set_menu`.

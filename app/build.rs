@@ -31,7 +31,7 @@ fn main() {
             }
         }
         "linux" => {
-            for package in ["gio-unix-2.0", "json-glib-1.0"] {
+            for package in ["gio-unix-2.0", "json-glib-1.0", "gtk4"] {
                 let lib = pkg_config::Config::new()
                     .cargo_metadata(false)
                     .probe(package)
@@ -41,7 +41,9 @@ fn main() {
                 }
                 libraries.push(lib);
             }
-            build.file("native/linux.c").flag("-std=c11");
+            build
+                .files(["native/linux.c", "native/linux_settings.c"])
+                .flag("-std=c11");
         }
         _ => panic!("runberth-app supports macOS and Linux"),
     }

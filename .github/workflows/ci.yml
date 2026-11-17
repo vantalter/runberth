@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libjson-glib-dev pkg-config dbus python3-gi
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libjson-glib-dev libgtk-4-dev pkg-config dbus python3-gi xvfb
       - name: Lint
         run: cargo clippy -p runberth-app --locked --all-targets -- -D warnings
       - name: Test
@@ -51,6 +51,9 @@ jobs:
         run: |
           cargo build -p runberth-app --locked
           dbus-run-session -- python3 app/tests/tray_linux.py target/debug/runberth-app
+      - name: Settings window opens
+        # timeout exits with 124 when the app is still running after 5 seconds.
+        run: xvfb-run -a dbus-run-session -- sh -c 'timeout 5 target/debug/runberth-app --settings; test $? -eq 124'
 
   app-macos:
     runs-on: macos-15

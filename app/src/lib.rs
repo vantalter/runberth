@@ -10,6 +10,7 @@ mod menu;
 mod native;
 mod runs;
 mod server;
+mod settings;
 mod token;
 mod updates;
 
@@ -22,6 +23,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use menu::{Action, RepoView, View};
+use serde_json::json;
 
 enum Wake {
     Refresh,
@@ -59,7 +61,7 @@ fn open(target: &str) {
     }
 }
 
-fn open_settings() {
+fn open_settings_file() {
     let path = config::settings_path();
     if let Err(error) = config::load(&path) {
         eprintln!("runberth-app: {error}");
@@ -76,7 +78,7 @@ fn perform(action: Action) {
     match action {
         Action::Open(url) => open(&url),
         Action::Refresh => wake(Wake::Refresh),
-        Action::Settings => open_settings(),
+        Action::Settings => show_settings(),
         Action::Login => {
             LOGIN.store(login::toggle(), Ordering::Relaxed);
             wake(Wake::Refresh);
@@ -101,9 +103,16 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "ready" => {
             LOGIN.store(login::state(), Ordering::Relaxed);
             SPARKLE.store(unsafe { native::native_has_updater() } != 0, Ordering::Relaxed);
+            if let Ok(config) = config::load(&config::settings_path()) {
+                set_update_checks(config.check_updates);
+            }
             let (sender, receiver) = mpsc::channel();
             if WAKE.set(Mutex::new(sender)).is_ok() {
                 std::thread::spawn(move || poll(receiver));
+            }
+            // `runberth-app --settings` starts with the Settings window open.
+            if std::env::args().any(|argument| argument == "--settings") {
+                show_settings();
             }
         }
         "click" => {
@@ -117,7 +126,106 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         }
         "menu-opened" => wake(Wake::MenuOpened),
         "quit" => perform(Action::Quit),
+        "open-settings" => show_settings(),
+        "settings-change" => change_settings(&value),
+        "settings-test" => test_connection(),
+        "token-save" => in_background(move || {
+            let result = token::store(&value);
+            token_status(result.map(|()| "Token stored"))
+        }),
+        "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
+        "settings-file" => open_settings_file(),
+        "login-toggle" => {
+            LOGIN.store(login::toggle(), Ordering::Relaxed);
+            native::settings_status(&json!({"login": LOGIN.load(Ordering::Relaxed)}).to_string());
+            wake(Wake::Refresh);
+        }
+        "check-updates" => perform(Action::CheckUpdates),
         _ => {}
+    }
+}
+
+/// Opens the Settings window with the settings file's current values.
+fn show_settings() {
+    let path = config::settings_path();
+    let (config, error) = match config::load(&path) {
+        Ok(config) => (config, String::new()),
+        Err(error) => (config::Config::parse("{}").expect("empty settings parse"), error),
+    };
+    let window = json!({
+        "fields": settings::fields(&config),
+        "login": LOGIN.load(Ordering::Relaxed),
+        "token_stored": token::is_stored(),
+        "sparkle": SPARKLE.load(Ordering::Relaxed),
+        "version": env!("CARGO_PKG_VERSION"),
+        "path": path.display().to_string(),
+        "error": error,
+    });
+    native::show_settings(&window.to_string());
+}
+
+fn change_settings(form: &str) {
+    let path = config::settings_path();
+    let result = serde_json::from_str(form)
+        .map_err(|_| "Unexpected settings form".to_owned())
+        .and_then(|form| settings::apply(&path, &form));
+    let error = result.as_ref().err().cloned().unwrap_or_default();
+    native::settings_status(&json!({"error": error}).to_string());
+    if result.is_ok() {
+        if let Ok(config) = config::load(&path) {
+            set_update_checks(config.check_updates);
+        }
+        wake(Wake::Refresh);
+    }
+}
+
+/// Runs slow work, such as ssh or the keychain tools, off the UI thread.
+fn in_background(work: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(work);
+}
+
+fn token_status(result: Result<&str, String>) {
+    let message = match &result {
+        Ok(message) => (*message).to_owned(),
+        Err(error) => error.clone(),
+    };
+    native::settings_status(
+        &json!({"token_stored": token::is_stored(), "token_message": message, "token_ok": result.is_ok()})
+            .to_string(),
+    );
+    wake(Wake::Refresh);
+}
+
+/// Asks the server for its status with the saved settings.
+fn test_connection() {
+    native::settings_status(&json!({"test": "Connecting…", "test_ok": true}).to_string());
+    in_background(|| {
+        let (message, ok) = match config::load(&config::settings_path()) {
+            Err(error) => (error, false),
+            Ok(config) => match config.server() {
+                None => ("Enter the server's host first".to_owned(), false),
+                Some(server) => match server::fetch(server, &config::cache_dir().join("ssh")) {
+                    Ok(status) => {
+                        let repos = status.runners.as_ref().map_or(0, Vec::len);
+                        let noun = if repos == 1 { "repository" } else { "repositories" };
+                        (
+                            format!("Connected: Runberth {}, {repos} {noun}", status.version),
+                            true,
+                        )
+                    }
+                    Err(error) => (error, false),
+                },
+            },
+        };
+        native::settings_status(&json!({"test": message, "test_ok": ok}).to_string());
+    });
+}
+
+/// Sparkle keeps its own schedule in the macOS app; the release check
+/// elsewhere follows the setting on each refresh.
+fn set_update_checks(enabled: bool) {
+    if SPARKLE.load(Ordering::Relaxed) {
+        unsafe { native::native_set_update_checks(c_int::from(enabled)) };
     }
 }
 
@@ -196,7 +304,9 @@ impl Poller {
                     }
                 }
                 for notice in self.tracker.update(&runner.repo, runs) {
-                    native::notify(&notice.title, &notice.body, &notice.url);
+                    if notice.wanted(config.notifications) {
+                        native::notify(&notice.title, &notice.body, &notice.url);
+                    }
                 }
             }
             repos.push(RepoView {
@@ -213,7 +323,7 @@ impl Poller {
         let due = self
             .update_checked
             .is_none_or(|checked| checked.elapsed() >= UPDATE_INTERVAL);
-        if !sparkle && (due || self.check_updates) {
+        if !sparkle && ((due && config.check_updates) || self.check_updates) {
             self.update = updates::fetch();
             self.update_checked = Some(Instant::now());
             self.check_updates = false;

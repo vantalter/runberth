@@ -93,6 +93,19 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub url: String,
+    pub failed: bool,
+}
+
+impl Notice {
+    /// Whether the settings' `notifications` choice announces this run.
+    pub fn wanted(&self, choice: crate::config::Notifications) -> bool {
+        use crate::config::Notifications;
+        match choice {
+            Notifications::All => true,
+            Notifications::Failures => self.failed,
+            Notifications::Off => false,
+        }
+    }
 }
 
 fn notice(repo: &str, run: &Run) -> Notice {
@@ -114,6 +127,7 @@ fn notice(repo: &str, run: &Run) -> Notice {
         ),
         body: body.join(" · "),
         url: run.html_url.clone(),
+        failed: failed(run),
     }
 }
 
@@ -234,8 +248,12 @@ pub mod tests {
                 title: "✓ r: CI passed".into(),
                 body: "main · Add a page · 4m".into(),
                 url: "https://github.com/o/r/actions/runs/2".into(),
+                failed: false,
             }]
         );
+        use crate::config::Notifications;
+        assert!(notices[0].wanted(Notifications::All));
+        assert!(!notices[0].wanted(Notifications::Failures) && !notices[0].wanted(Notifications::Off));
         assert!(
             tracker
                 .update("o/r", &[run(2, "completed", Some("success"))])

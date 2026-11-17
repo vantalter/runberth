@@ -14,7 +14,9 @@ const TEMPLATE: &str = r#"{
     "key": "~/.ssh/id_ed25519"
   },
   "github_token_command": null,
-  "interval_seconds": 20
+  "interval_seconds": 20,
+  "notifications": "all",
+  "check_updates": true
 }
 "#;
 
@@ -42,6 +44,32 @@ pub struct Config {
     pub github_token_command: Option<String>,
     #[serde(default = "default_interval")]
     pub interval_seconds: u64,
+    #[serde(default)]
+    pub notifications: Notifications,
+    /// Check for a new release daily: Sparkle in the macOS app, otherwise
+    /// the app's own release check.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+}
+
+/// Which finished runs are announced.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Notifications {
+    #[default]
+    All,
+    Failures,
+    Off,
+}
+
+impl Notifications {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Failures => "failures",
+            Self::Off => "off",
+        }
+    }
 }
 
 fn default_user() -> String {
@@ -52,6 +80,9 @@ fn default_port() -> u16 {
 }
 fn default_interval() -> u64 {
     20
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -138,6 +169,8 @@ mod tests {
         assert!(config.server().is_none());
         assert_eq!(config.interval_seconds, 20);
         assert_eq!(config.github_token_command, None);
+        assert_eq!(config.notifications, Notifications::All);
+        assert!(config.check_updates);
     }
 
     #[test]
@@ -150,6 +183,9 @@ mod tests {
         let fast = Config::parse(r#"{"interval_seconds": 1}"#).unwrap();
         assert_eq!(fast.interval(), std::time::Duration::from_secs(5));
         assert!(Config::parse("{").unwrap_err().contains("not valid JSON"));
+        let quiet = Config::parse(r#"{"notifications": "failures", "check_updates": false}"#).unwrap();
+        assert_eq!(quiet.notifications, Notifications::Failures);
+        assert!(!quiet.check_updates);
     }
 
     #[test]

@@ -7,7 +7,9 @@
  *   "ready"        the tray exists; Rust starts polling
  *   "click"        a menu item was chosen; value is its id
  *   "menu-opened"  the menu is about to show
- *   "quit"         SIGTERM or SIGINT */
+ *   "quit"         SIGTERM or SIGINT
+ *   "open-settings" the app was opened again while running (macOS)
+ * and the Settings window's events, listed below. */
 void runberth_app_event(const char *kind, const char *value);
 
 /* Runs the UI loop until native_stop. Returns nonzero if the tray cannot start. */
@@ -33,3 +35,18 @@ int native_login_item(int action);
 /* 1 when Sparkle (the macOS app bundle) checks for and installs updates. */
 int native_has_updater(void);
 void native_check_updates(void);
+/* Sparkle's automatic daily checks; Linux ignores this, as Rust checks. */
+void native_set_update_checks(int enabled);
+
+/* The Settings window. native_show_settings opens or raises it with
+ * {"fields": {host, user, port, key, token_command, interval, notifications,
+ * check_updates}, "login", "token_stored", "sparkle", "version", "path",
+ * "error"}. native_settings_status is thread-safe and updates only the
+ * status lines it names: "error", "test" with "test_ok", "token_stored" with
+ * "token_message" and "token_ok", and "login".
+ *
+ * The window reports with runberth_app_event: "settings-change" with the
+ * fields as JSON, "settings-test", "token-save" with the token,
+ * "token-remove", "settings-file", "login-toggle", and "check-updates". */
+void native_show_settings(const char *window_json);
+void native_settings_status(const char *status_json);

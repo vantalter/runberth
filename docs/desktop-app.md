@@ -29,37 +29,44 @@ Choose **Launch at Login** in the menu to start the app with your session.
 
 ## Set it up
 
-1. Choose **Settings…** in the menu. It opens the settings file in a text editor, creating it the first time:
-   - macOS: `~/Library/Application Support/Runberth/settings.json`
-   - Linux: `~/.config/runberth/settings.json`
+Choose **Settings…** in the menu. On macOS, opening Runberth again while it runs also shows Settings.
 
-   ```json
-   {
-     "server": {
-       "host": "203.0.113.10",
-       "user": "ubuntu",
-       "port": 22,
-       "key": "~/.ssh/runberth-vps"
-     },
-     "github_token_command": null,
-     "interval_seconds": 20
-   }
-   ```
+1. **Server:** enter the host, the SSH user, and the port, and choose the private key, as for `scripts/install-vps.sh`. Without a key, ssh uses your agent and `~/.ssh/config`. The server's host key must already be in `~/.ssh/known_hosts`: connect once with `ssh` first. Choose **Test Connection** to check: it shows the server's Runberth version and how many repositories are connected, or what went wrong.
+2. **GitHub:** paste a token and choose **Save**. The app keeps it in the macOS login keychain or the Linux Secret Service, such as GNOME Keyring or KWallet, never in a file. **Create a Token…** opens GitHub's token page. Instead of a stored token, the app can run a **token command** that prints one, such as `gh auth token --user NAME`.
+3. **General:** how often the app refreshes, which finished runs it announces (all, failed only, or none), Launch at Login, and automatic update checks.
 
-   Set `host`, `user`, and `key` as for `scripts/install-vps.sh`. Without `key`, ssh uses your agent and `~/.ssh/config`. The server's host key must already be in `~/.ssh/known_hosts`: connect once with `ssh` first. The app refreshes every `interval_seconds`, every 10 seconds while runs are in progress, and when you open the menu. It reads the settings again on every refresh, so edits apply without a restart.
+The app also refreshes every 10 seconds while runs are in progress, and when you open the menu.
 
-2. Store the GitHub token where the app looks for it, so it never sits in a file:
+### The settings file
 
-   ```sh
-   # macOS: the login keychain (prompts for the token)
-   security add-generic-password -s Runberth -a github -w
-   # Linux: the Secret Service, such as GNOME Keyring or KWallet
-   secret-tool store --label="Runberth GitHub token" service runberth account github
-   ```
+The window edits a settings file, which stays the single source of truth; **Open settings.json** in the window's General section opens it in a text editor:
 
-   Or set `github_token_command` to a command that prints a token, such as `"gh auth token --user NAME"`.
+- macOS: `~/Library/Application Support/Runberth/settings.json`
+- Linux: `~/.config/runberth/settings.json`
 
-3. Choose **Refresh Now**. The first line of the menu names the server and its Runberth version. Any problem with the server, the settings, or the token appears in the menu below it.
+```json
+{
+  "server": {
+    "host": "203.0.113.10",
+    "user": "ubuntu",
+    "port": 22,
+    "key": "~/.ssh/runberth-vps"
+  },
+  "github_token_command": null,
+  "interval_seconds": 20,
+  "notifications": "all",
+  "check_updates": true
+}
+```
+
+`notifications` is `all`, `failures`, or `off`. The app reads the file again on every refresh, so hand edits apply without a restart, and the window keeps fields it does not show. The token is not in this file. To store it from a terminal instead of the window:
+
+```sh
+# macOS: the login keychain (prompts for the token)
+security add-generic-password -s Runberth -a github -w
+# Linux: the Secret Service
+secret-tool store --label="Runberth GitHub token" service runberth account github
+```
 
 ## Troubleshooting
 
@@ -74,7 +81,7 @@ To see what the app shows on each refresh, run it from a terminal with `RUNBERTH
 
 The app lives in `app/`, a member of the Cargo workspace.
 
-- **Linux:** install `libglib2.0-dev`, `libjson-glib-dev`, and `pkg-config`, then `cargo run -p runberth-app`. The release builds `.deb` and `.rpm` packages from `app/packaging/linux/nfpm.yaml`.
+- **Linux:** install `libglib2.0-dev`, `libjson-glib-dev`, `libgtk-4-dev`, and `pkg-config`, then `cargo run -p runberth-app`. Add `--settings` to start with the Settings window open. The release builds `.deb` and `.rpm` packages from `app/packaging/linux/nfpm.yaml`.
 - **macOS:** `cargo run -p runberth-app` runs the menu bar item without notifications, Sparkle, or Launch at Login, which need the app bundle. `app/scripts/build-macos-app.sh` builds `dist/Runberth.app` with Xcode and signs it with your Apple Development certificate when you have one. `app/scripts/check-macos-app.sh` checks the result.
 
 ## Releasing the macOS app

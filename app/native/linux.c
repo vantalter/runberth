@@ -527,4 +527,6 @@ void native_stop(void) {
 
 int native_has_updater(void) { return 0; }
 
+void native_set_update_checks(int enabled) { (void)enabled; }
+
 void native_check_updates(void) {}

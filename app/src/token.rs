@@ -1,7 +1,8 @@
-//! The GitHub token, never stored by the app itself: it comes from the
+//! The GitHub token, never written to the app's files: it comes from the
 //! settings' `github_token_command`, or else the macOS Keychain or the
-//! Secret Service, where the README shows how to store it.
+//! Secret Service, where the Settings window stores it.
 
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
@@ -52,6 +53,92 @@ fn missing(config: &Config) -> String {
     }
 }
 
+/// Characters of GitHub's token formats, so a token can be quoted safely.
+fn valid(token: &str) -> bool {
+    !token.is_empty() && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Stores the token in the Keychain or the Secret Service. It is passed on
+/// stdin, never as an argument other processes could read.
+pub fn store(token: &str) -> Result<(), String> {
+    let token = token.trim();
+    if !valid(token) {
+        return Err("That does not look like a GitHub token".into());
+    }
+    let (mut command, input) = if cfg!(target_os = "macos") {
+        // `security -i` reads its commands from stdin.
+        let mut command = Command::new("/usr/bin/security");
+        command.arg("-i");
+        let input = format!("add-generic-password -U -s Runberth -a github -w \"{token}\"\n");
+        (command, input)
+    } else {
+        let mut command = Command::new("secret-tool");
+        command.args([
+            "store",
+            "--label=Runberth GitHub token",
+            "service",
+            "runberth",
+            "account",
+            "github",
+        ]);
+        (command, token.to_owned())
+    };
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| unavailable())?;
+    let written = child
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| stdin.write_all(input.as_bytes()));
+    let status = child.wait().map_err(|error| error.to_string())?;
+    if written.is_err() || !status.success() || !is_stored() {
+        return Err(format!("Cannot store the token: {}", unavailable()));
+    }
+    Ok(())
+}
+
+pub fn remove() -> Result<(), String> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("/usr/bin/security");
+        command.args(["delete-generic-password", "-s", "Runberth", "-a", "github"]);
+        command
+    } else {
+        let mut command = Command::new("secret-tool");
+        command.args(["clear", "service", "runberth", "account", "github"]);
+        command
+    };
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| unavailable())?;
+    if is_stored() {
+        return Err("Cannot remove the token".into());
+    }
+    Ok(())
+}
+
+/// Whether a token is stored, without reading it out.
+pub fn is_stored() -> bool {
+    stored()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn unavailable() -> String {
+    if cfg!(target_os = "macos") {
+        "the login keychain is unavailable".into()
+    } else {
+        "the Secret Service is unavailable; install secret-tool (libsecret-tools)".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +155,12 @@ mod tests {
         );
         config.github_token_command = Some("echo two words".into());
         assert!(read(&config).is_err());
+    }
+
+    #[test]
+    fn only_token_characters_are_stored() {
+        assert!(valid("ghp_AbC123") && valid("github_pat_11AB_cd"));
+        assert!(!valid("") && !valid("a b") && !valid("x\"; rm") && !valid("tok\n"));
+        assert!(store(" ").unwrap_err().contains("GitHub token"));
     }
 }
