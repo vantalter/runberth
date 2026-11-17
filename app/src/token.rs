@@ -48,8 +48,10 @@ pub fn read(config: &Config) -> Result<String, String> {
 fn missing(config: &Config) -> String {
     if config.github_token_command.is_some() {
         "github_token_command printed no token".into()
-    } else {
+    } else if cfg!(target_os = "macos") {
         "Add a GitHub token to see job results (Settings…)".into()
+    } else {
+        "Store a GitHub token with secret-tool, or set github_token_command, to see job results".into()
     }
 }
 

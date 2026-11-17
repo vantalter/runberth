@@ -246,7 +246,13 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     }
     items.push(builder.separator());
     items.push(builder.item("Refresh Now", Action::Refresh));
-    items.push(builder.item("Settings…", Action::Settings));
+    // Linux opens settings.json itself; macOS has a Settings window.
+    let settings = if cfg!(target_os = "linux") {
+        "Edit Settings…"
+    } else {
+        "Settings…"
+    };
+    items.push(builder.item(settings, Action::Settings));
     if view.login >= 0 {
         let label = if view.login == 2 {
             "Launch at Login (needs approval)"

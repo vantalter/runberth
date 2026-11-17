@@ -147,6 +147,11 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
 
 /// Opens the Settings window with the settings file's current values.
 fn show_settings() {
+    // Linux keeps to the settings file, so the app needs no GUI toolkit.
+    if cfg!(target_os = "linux") {
+        open_settings_file();
+        return;
+    }
     let path = config::settings_path();
     let (config, error) = match config::load(&path) {
         Ok(config) => (config, String::new()),

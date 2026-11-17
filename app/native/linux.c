@@ -529,4 +529,9 @@ int native_has_updater(void) { return 0; }
 
 void native_set_update_checks(int enabled) { (void)enabled; }
 
+/* Linux has no Settings window: Settings opens settings.json in an editor. */
+void native_show_settings(const char *window_json) { (void)window_json; }
+
+void native_settings_status(const char *status_json) { (void)status_json; }
+
 void native_check_updates(void) {}

@@ -38,7 +38,8 @@ void native_check_updates(void);
 /* Sparkle's automatic daily checks; Linux ignores this, as Rust checks. */
 void native_set_update_checks(int enabled);
 
-/* The Settings window. native_show_settings opens or raises it with
+/* The Settings window, macOS only; on Linux these do nothing, and Settings
+ * opens settings.json in an editor. native_show_settings opens or raises it with
  * {"fields": {host, user, port, key, token_command, interval, notifications,
  * check_updates}, "login", "token_stored", "sparkle", "version", "path",
  * "error"}. native_settings_status is thread-safe and updates only the
