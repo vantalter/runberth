@@ -240,7 +240,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *lastChecked;
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
-@property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version;
+@property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version, *settingsPath;
 @property NSArray<NSTextField *> *errorLabels;
 @property NSTimer *saveTimer;
 @end
@@ -316,12 +316,15 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.loginNote.hidden = YES;
     NSTextField *error = [self errorLabel];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
+    // Selectable, so the path can be copied.
+    self.settingsPath = noteLabel();
+    self.settingsPath.selectable = YES;
     return form(@[
         @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
         @[ @"Notifications:", self.notifications ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
         NSNull.null,
-        @[ @"Settings file:", pushButton(@"Open settings.json", self, @selector(openFile:)) ],
+        @[ @"Settings file:", column(@[ self.settingsPath, pushButton(@"Open settings.json", self, @selector(openFile:)) ]) ],
     ]);
 }
 - (id)updater {
@@ -447,6 +450,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         self.token.stringValue = @"";
         self.testStatus.hidden = self.tokenMessage.hidden = YES;
         self.version.stringValue = [NSString stringWithFormat:@"%@", state[@"version"]];
+        // With the home folder as ~, as people write it.
+        self.settingsPath.stringValue = [state[@"path"] ?: @"" stringByAbbreviatingWithTildeInPath];
     }
     [self refreshUpdates];
     [self status:state];

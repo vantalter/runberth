@@ -87,7 +87,11 @@ runberth connect OWNER/REPO
 runberth disconnect OWNER/REPO
 runberth status --watch 5
 runberth logs OWNER/REPO --follow
+runberth install --swap 3 --on-demand
+runberth update
 ```
+
+`install` sets up Runberth on the server in the settings, as `scripts/install-vps.sh` does from a checkout: it installs the release that matches the app's version, checked against its published SHA-256, with the host config for your GitHub token's account (or `--owner NAME`) and the label `runberth-ci` (or `--label`). It also installs the sudoers rule the app needs; `--swap`, `--packages`, and `--on-demand` add the same extras as the script. `update` installs the app's version over an existing installation and keeps its host config, restarting the on-demand dock if it runs. Both allocate a terminal, so `sudo` can ask for a password; `runberth install --help` lists the options. When the server's Runberth is older than the app, or lacks the sudoers rule, the menu offers **Update Server…**, which runs `runberth update` in a terminal window.
 
 `connect` and `disconnect` read a GitHub token from stdin when one is piped, as in `gh auth token | runberth connect OWNER/REPO`, and otherwise use the token stored for the app. Run `runberth --help` for the options.
 
@@ -100,8 +104,7 @@ sudo ln -sf /Applications/Runberth.app/Contents/MacOS/runberth /usr/local/bin/ru
 
 ## Troubleshooting
 
-- **"too old for this app":** update the server with `scripts/install-vps.sh`, keeping the options you installed with.
-- **"needs Runberth's sudoers rule":** reinstall with `--sudoers`.
+- **"too old for this app"** or **"needs Runberth's sudoers rule":** choose **Update Server…** in the menu, or run `runberth update`.
 - **No notifications on macOS:** allow them for Runberth in System Settings > Notifications.
 - **No icon on Linux:** the desktop needs a StatusNotifier tray, such as KDE's, or GNOME's AppIndicator extension. The app prints a message when it finds none.
 

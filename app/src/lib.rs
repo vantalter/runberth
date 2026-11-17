@@ -6,6 +6,7 @@
 mod cli;
 mod config;
 mod github;
+mod install;
 mod login;
 mod menu;
 mod native;
@@ -95,6 +96,7 @@ fn perform(action: Action) {
         Action::CheckUpdates => wake(Wake::CheckUpdates),
         Action::Connect(repo) => start_operation("connect", repo),
         Action::Logs(repo) => show_logs(repo),
+        Action::UpdateServer => run_in_terminal("update"),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
             wake(Wake::Stop);
@@ -237,6 +239,57 @@ fn run_on_server(remote: &[&str], token: bool) -> Result<Vec<u8>, String> {
             output.status.code(),
             &String::from_utf8_lossy(&output.stderr),
         ))
+    }
+}
+
+/// Runs `runberth COMMAND` in a terminal window, where sudo can ask for a
+/// password and the output stays readable.
+fn run_in_terminal(command: &str) {
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let line = format!(
+        "{} {command}; echo; echo 'Press Return to close this window.'; read _",
+        quote(&executable.display().to_string())
+    );
+    if cfg!(target_os = "macos") {
+        // Terminal runs a .command file it is asked to open.
+        let script = config::cache_dir().join(format!("runberth-{command}.command"));
+        let written = std::fs::create_dir_all(config::cache_dir())
+            .and_then(|()| std::fs::write(&script, format!("#!/bin/sh\n{line}\n")))
+            .and_then(|()| {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            });
+        match written {
+            Ok(()) => {
+                let _ = Command::new("open").args(["-a", "Terminal"]).arg(&script).spawn();
+            }
+            Err(error) => eprintln!("runberth-app: cannot write {}: {error}", script.display()),
+        }
+        return;
+    }
+    let terminals: [(&str, &[&str]); 5] = [
+        ("x-terminal-emulator", &["-e"]),
+        ("gnome-terminal", &["--"]),
+        ("konsole", &["-e"]),
+        ("xfce4-terminal", &["-x"]),
+        ("xterm", &["-e"]),
+    ];
+    let opened = terminals.iter().any(|(terminal, flag)| {
+        Command::new(terminal)
+            .args(*flag)
+            .args(["sh", "-c", &line])
+            .spawn()
+            .is_ok()
+    });
+    if !opened {
+        native::notify(
+            "No terminal found",
+            &format!("Run `runberth {command}` in a terminal"),
+            "",
+        );
     }
 }
 

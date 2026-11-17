@@ -102,6 +102,18 @@ impl GitHub {
         Ok(runs.workflow_runs)
     }
 
+    /// The token's account name.
+    pub fn login(&self) -> Result<String, String> {
+        let user: serde_json::Value = self
+            .get("/user")?
+            .into_json()
+            .map_err(|_| "Unexpected answer from GitHub".to_owned())?;
+        user["login"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or("Unexpected answer from GitHub".into())
+    }
+
     /// The token owner's private repositories, most recently pushed first:
     /// those Runberth can connect.
     pub fn private_repositories(&self) -> Result<Vec<String>, String> {

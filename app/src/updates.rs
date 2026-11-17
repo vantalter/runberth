@@ -28,6 +28,12 @@ impl Status {
     }
 }
 
+/// Whether a server reporting `version` is older than this app.
+pub fn server_is_older(version: &str) -> bool {
+    let base = |version: &str| numeric(version.split_once('-').map_or(version, |(base, _)| base));
+    matches!((base(version), base(env!("CARGO_PKG_VERSION"))), (Some(server), Some(app)) if server < app)
+}
+
 fn numeric(tag: &str) -> Option<[u64; 3]> {
     let tag = tag.strip_prefix('v').unwrap_or(tag);
     let mut parts = tag.split('.');
@@ -96,6 +102,14 @@ pub fn fetch() -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_servers_are_noticed() {
+        assert!(server_is_older("0.0.1"));
+        assert!(!server_is_older(env!("CARGO_PKG_VERSION")));
+        assert!(!server_is_older("99.0.0"));
+        assert!(!server_is_older("unknown"));
+    }
 
     #[test]
     fn newest_numeric_release_wins() {

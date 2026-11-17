@@ -165,6 +165,9 @@ if [[ -n "$packages" ]]; then
 fi
 if [[ "$on_demand" == true ]]; then
   $sudo_cmd /opt/runberth/bin/runberth on-demand on
+elif systemctl is-active --quiet runberth-dock.service 2>/dev/null; then
+  # The dock keeps running the binary it started with.
+  $sudo_cmd systemctl restart runberth-dock.service
 fi
 if [[ "$sudoers" == true ]]; then
   printf '%s\n' "$sudoers_rule" > sudoers.runberth

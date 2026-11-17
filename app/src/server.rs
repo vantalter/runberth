@@ -10,7 +10,7 @@ use crate::config::{Server, expand};
 
 /// The status format this app understands; see `status_json` in the server.
 const FORMAT: u64 = 1;
-const RUNBERTH: &str = "/opt/runberth/bin/runberth";
+pub const RUNBERTH: &str = "/opt/runberth/bin/runberth";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Memory {
@@ -92,7 +92,7 @@ fn private_dir(dir: &Path) -> bool {
 /// Where ssh keeps the shared connection's socket: the app's cache folder,
 /// or, when its path is too long for a socket, a private folder in /tmp.
 /// None turns connection sharing off.
-fn socket_dir() -> Option<PathBuf> {
+pub fn socket_dir() -> Option<PathBuf> {
     let cache = crate::config::cache_dir().join("ssh");
     if fits(&cache) && std::fs::create_dir_all(&cache).is_ok() {
         return Some(cache);
@@ -115,6 +115,20 @@ pub fn safe_argument(argument: &str) -> bool {
 /// refresh, where its socket path fits. `terminal` allocates one for
 /// commands that redraw, such as `status --watch`.
 pub fn ssh_args(server: &Server, socket_dir: Option<&Path>, remote: &[&str], terminal: bool) -> Vec<String> {
+    let mut args = options(server, socket_dir);
+    args.extend(["-p".to_owned(), server.port.to_string()]);
+    if terminal {
+        args.push("-t".into());
+    }
+    args.push(format!("{}@{}", server.user, server.host.trim()));
+    args.extend(["sudo", "-n", RUNBERTH].map(str::to_owned));
+    args.extend(remote.iter().map(|argument| (*argument).to_owned()));
+    args
+}
+
+/// The options ssh and scp share: no password prompts, timeouts, the shared
+/// connection, and the key. The port is -p for ssh and -P for scp.
+pub fn options(server: &Server, socket_dir: Option<&Path>) -> Vec<String> {
     let mut args: Vec<String> = [
         "BatchMode=yes",
         "ConnectTimeout=10",
@@ -136,18 +150,16 @@ pub fn ssh_args(server: &Server, socket_dir: Option<&Path>, remote: &[&str], ter
             args.extend(["-o".to_owned(), option]);
         }
     }
-    args.extend(["-p".to_owned(), server.port.to_string()]);
     if let Some(key) = server.key.as_deref().filter(|key| !key.is_empty()) {
         args.extend(["-i".into(), expand(key).display().to_string()]);
         args.extend(["-o".into(), "IdentitiesOnly=yes".into()]);
     }
-    if terminal {
-        args.push("-t".into());
-    }
-    args.push(format!("{}@{}", server.user, server.host.trim()));
-    args.extend(["sudo", "-n", RUNBERTH].map(str::to_owned));
-    args.extend(remote.iter().map(|argument| (*argument).to_owned()));
     args
+}
+
+/// ssh, or the stand-in that tests/tray_linux.py sets in RUNBERTH_APP_SSH.
+pub fn ssh_program() -> std::ffi::OsString {
+    std::env::var_os("RUNBERTH_APP_SSH").unwrap_or_else(|| "/usr/bin/ssh".into())
 }
 
 /// The command that runs `runberth REMOTE...` with sudo on the server: over
@@ -169,9 +181,7 @@ pub fn command(server: &Server, remote: &[&str], terminal: bool) -> Result<Comma
         command.arg("-n").arg(RUNBERTH).args(remote);
         return Ok(command);
     }
-    // RUNBERTH_APP_SSH replaces ssh in tests/tray_linux.py.
-    let ssh = std::env::var_os("RUNBERTH_APP_SSH").unwrap_or_else(|| "/usr/bin/ssh".into());
-    let mut command = Command::new(ssh);
+    let mut command = Command::new(ssh_program());
     command.args(ssh_args(server, socket_dir().as_deref(), remote, terminal));
     Ok(command)
 }
@@ -277,7 +287,7 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("BatchMode=yes"));
         assert!(joined.contains("ControlPath=/cache/ssh/%C"));
-        assert!(joined.contains("-p 2222 -i /keys/vps -o IdentitiesOnly=yes ubuntu@192.0.2.1"));
+        assert!(joined.contains("-i /keys/vps -o IdentitiesOnly=yes -p 2222 ubuntu@192.0.2.1"));
         assert!(joined.ends_with("sudo -n /opt/runberth/bin/runberth status --json"));
         let long = Path::new("/a/very/long/cache/directory/that/would/not/fit/in/a/unix/socket/path");
         assert!(

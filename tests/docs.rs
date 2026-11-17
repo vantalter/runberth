@@ -58,10 +58,21 @@ fn documented_commands_exist() {
         commands.contains("connect") && commands.contains("cleanup"),
         "{usage}"
     );
+    // The desktop app guide also documents the app's own `runberth` command.
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("app/src/cli.rs")).unwrap();
+    let start = source.find("const USAGE: &str = \"").unwrap();
+    let app_usage = &source[start..start + source[start..].find("\";").unwrap()];
+    let app_commands: BTreeSet<&str> = app_usage
+        .lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(app_commands.contains("install"), "{app_usage}");
     for (path, text) in documents() {
+        let app_guide = path.ends_with("desktop-app.md");
         for word in invoked(&text) {
             assert!(
-                commands.contains(word.as_str()),
+                commands.contains(word.as_str()) || (app_guide && app_commands.contains(word.as_str())),
                 "{} documents unknown command `{word}`",
                 path.display()
             );

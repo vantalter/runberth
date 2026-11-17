@@ -5,7 +5,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, server, token};
+use crate::{config, install, server, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
@@ -17,6 +17,8 @@ Runs Runberth commands on the server named in the desktop app's settings.
   status [--watch [SECONDS]]    the server's memory, lock holder, and runners
   logs OWNER/REPO [--follow] [--lines N]
                                 a repository's lock notes and runner journal
+  install [OPTIONS]             set up Runberth on the server; see install --help
+  update                        install this app's version on the server
   --version                     this app's version
 
 connect and disconnect need an admin-capable GitHub token. They read it from
@@ -37,6 +39,7 @@ fn repository(argument: &str) -> bool {
 /// None when they are not a command, so the app starts instead.
 enum Parsed<'a> {
     Run(Vec<&'a str>, bool),
+    Install(install::Options),
     Print(String, i32),
 }
 
@@ -57,6 +60,11 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         ["disconnect", repo, "--github-removed"] if repository(repo) => Some(Parsed::Run(args, false)),
         ["status"] | ["status", "--watch"] | ["status", "--watch", _] => Some(Parsed::Run(args, false)),
         ["logs", repo, ..] if repository(repo) => Some(Parsed::Run(args, false)),
+        ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
+        ["install" | "update", ..] => match install::parse(&args) {
+            Ok(options) => Some(Parsed::Install(options)),
+            Err(error) => Some(Parsed::Print(error, 2)),
+        },
         _ => usage(2),
     }
 }
@@ -72,6 +80,13 @@ pub fn run(args: &[String]) -> Option<i32> {
             eprintln!("{text}");
             Some(code)
         }
+        Parsed::Install(options) => Some(install::run(&options).map_or_else(
+            |error| {
+                eprintln!("runberth: {error}");
+                1
+            },
+            |()| 0,
+        )),
         Parsed::Run(remote, needs_token) => Some(execute(&remote, needs_token).unwrap_or_else(|error| {
             eprintln!("runberth: {error}");
             1
@@ -133,6 +148,9 @@ mod tests {
         match parse(&args) {
             Some(Parsed::Run(remote, token)) => Some((remote.iter().map(|s| s.to_string()).collect(), token)),
             Some(Parsed::Print(_, code)) => Some((vec![format!("print {code}")], false)),
+            Some(Parsed::Install(options)) => {
+                Some((vec![format!("install update={}", options.update)], false))
+            }
             None => None,
         }
     }
@@ -147,6 +165,10 @@ mod tests {
         assert!(!parsed("disconnect o/r --github-removed").unwrap().1);
         assert!(!parsed("status --watch 5").unwrap().1);
         assert!(!parsed("logs o/r --follow").unwrap().1);
+        assert_eq!(parsed("update").unwrap().0, ["install update=true"]);
+        assert_eq!(parsed("install --swap 3").unwrap().0, ["install update=false"]);
+        assert_eq!(parsed("install --swap 9").unwrap().0, ["print 2"]);
+        assert_eq!(parsed("update --help").unwrap().0, ["print 0"]);
     }
 
     #[test]

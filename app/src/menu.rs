@@ -23,6 +23,8 @@ pub enum Action {
     Disconnect(String),
     /// Open the repository's latest lock notes and runner journal.
     Logs(String),
+    /// Run `runberth update` in a terminal, where sudo can ask for a password.
+    UpdateServer,
     Quit,
 }
 
@@ -265,6 +267,10 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         (None, _) => items.push(builder.info("No server set — choose Settings…")),
         (Some(name), Some(Ok(status))) => {
             items.push(builder.info(format!("{name} · Runberth {}", status.version)));
+            if updates::server_is_older(&status.version) {
+                let label = format!("Update Server to {}…", env!("CARGO_PKG_VERSION"));
+                items.push(builder.item(label, Action::UpdateServer));
+            }
             if let Some(memory) = &status.memory {
                 items.push(builder.info(format!(
                     "Memory {} of {} MiB · swap {} MiB",
@@ -294,6 +300,10 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         (Some(name), Some(Err(error))) => {
             items.push(builder.info(format!("{name} — unreachable")));
             items.push(builder.info(error.clone()));
+            // `runberth update` fixes both: it installs this version and the rule.
+            if error.contains("too old") || error.contains("sudoers rule") {
+                items.push(builder.item("Update Server…", Action::UpdateServer));
+            }
         }
         (Some(name), None) => items.push(builder.info(format!("{name} — connecting…"))),
     }
@@ -568,6 +578,31 @@ mod tests {
         assert_eq!(
             labels(&find(&menu["items"], "Connect Repository")["children"])[0],
             "Listing repositories needs a GitHub token"
+        );
+    }
+
+    #[test]
+    fn an_old_server_offers_an_update() {
+        let (menu, actions) = build(&view(
+            Some(Err(
+                "The server's Runberth is too old for this app; update it".into()
+            )),
+            vec![],
+        ));
+        let id = find(&menu["items"], "Update Server…")["id"].as_u64().unwrap() as u32;
+        assert_eq!(actions[&id], Action::UpdateServer);
+        let mut old = status(vec![]);
+        old.version = "0.0.1".into();
+        let (menu, _) = build(&view(Some(Ok(old)), vec![]));
+        find(
+            &menu["items"],
+            &format!("Update Server to {}…", env!("CARGO_PKG_VERSION")),
+        );
+        let (current, _) = build(&view(Some(Ok(status(vec![]))), vec![]));
+        assert!(
+            !labels(&current["items"])
+                .iter()
+                .any(|label| label.starts_with("Update Server"))
         );
     }
 
