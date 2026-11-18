@@ -18,9 +18,8 @@ void native_stop(void);
 
 /* Thread-safe: both copy their arguments and apply them on the UI thread.
  * menu_json is {"icon", "badge", "tooltip", "items": [...]}, where each item
- * is {"id", "label", "enabled", "checked"?, "children"?, "style"?} or
- * {"id", "separator": true}. A "style" of "header" or "info" marks a line of
- * information, drawn readably rather than as a disabled item. */
+ * is {"id", "label", "enabled", "checked"?, "children"?} or
+ * {"id", "separator": true}. */
 void native_set_menu(const char *menu_json);
 /* Shows a desktop notification; clicking it opens url when it is not empty. */
 void native_notify(const char *title, const char *body, const char *url);
