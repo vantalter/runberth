@@ -147,6 +147,28 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
             token_status(result.map(|()| "Token stored"))
         }),
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
+        "cleanup-preview" => in_background(|| {
+            let status = match run_on_server(&["cleanup"], false) {
+                Ok(plan) => json!({"cleanup_plan": String::from_utf8_lossy(&plan).trim_end()}),
+                Err(error) => json!({"cleanup": error, "cleanup_ok": false}),
+            };
+            native::settings_status(&status.to_string());
+        }),
+        "cleanup-execute" => in_background(|| {
+            let result = run_on_server(&["cleanup", "--execute", "--github-token-stdin"], true);
+            let (message, ok) = match &result {
+                Ok(_) => ("Runberth is removed from the server".to_owned(), true),
+                Err(error) => (error.clone(), false),
+            };
+            native::settings_status(&json!({"cleanup": message, "cleanup_ok": ok}).to_string());
+            let title = if ok {
+                "Server cleaned up"
+            } else {
+                "Cleanup stopped"
+            };
+            native::notify(title, &message, "");
+            wake(Wake::Refresh);
+        }),
         "settings-file" => open_settings_file(),
         "login-toggle" => {
             LOGIN.store(login::toggle(), Ordering::Relaxed);

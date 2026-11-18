@@ -242,6 +242,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
 @property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version, *settingsPath;
+@property NSTextField *cleanupStatus;
+@property NSButton *cleanupButton;
 @property NSArray<NSTextField *> *errorLabels;
 @property NSTimer *saveTimer;
 @end
@@ -265,6 +267,14 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.testStatus.hidden = YES;
     NSTextField *error = [self errorLabel];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
+    self.cleanupButton = pushButton(@"Clean Up Server…", self, @selector(cleanup:));
+    self.cleanupButton.hasDestructiveAction = YES;
+    NSTextField *cleanupNote = noteLabel();
+    cleanupNote.stringValue = @"Removes Runberth from the server: every runner and its GitHub registration, "
+                              @"their accounts and caches, and the packages and swap it added. Shows the "
+                              @"plan before anything is removed.";
+    self.cleanupStatus = noteLabel();
+    self.cleanupStatus.hidden = YES;
     return form(@[
         @[ @"Host:", self.host ],
         @[ @"User:", self.user ],
@@ -274,6 +284,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         NSNull.null,
         @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus,
                           error ]) ],
+        NSNull.null,
+        @[ @"Remove:", column(@[ self.cleanupButton, cleanupNote, self.cleanupStatus ]) ],
     ]);
 }
 - (NSView *)github {
@@ -462,12 +474,59 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     [self.window orderFrontRegardless];
 }
 /* Updates the status lines that the dictionary names. */
+- (void)cleanup:(id)sender {
+    // Clean up the server the window shows, not an edit still being typed.
+    [self save];
+    self.cleanupButton.enabled = NO;
+    setStatus(self.cleanupStatus, @"Reading the cleanup plan…", YES);
+    emit(@"cleanup-preview", @"");
+}
+/* Shows the server's dry-run plan and removes everything only on a second,
+ * explicit choice: cleanup cannot be undone. */
+- (void)confirmCleanup:(NSString *)plan {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleCritical;
+    alert.messageText = @"Remove Runberth from the server?";
+    alert.informativeText = @"Cleanup removes everything in this plan, including each runner's GitHub "
+                            @"registration. It cannot be undone. Change the repositories' runs-on first.";
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 460, 220)];
+    scroll.hasVerticalScroller = YES;
+    scroll.borderType = NSBezelBorder;
+    NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+    text.editable = NO;
+    text.font = [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightRegular];
+    text.string = plan;
+    text.autoresizingMask = NSViewWidthSizable;
+    scroll.documentView = text;
+    alert.accessoryView = scroll;
+    NSButton *remove = [alert addButtonWithTitle:@"Remove Everything"];
+    remove.hasDestructiveAction = YES;
+    [alert addButtonWithTitle:@"Cancel"].keyEquivalent = @"\033";
+    // Return must not confirm by accident.
+    remove.keyEquivalent = @"";
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+                    if (response == NSAlertFirstButtonReturn) {
+                        setStatus(self.cleanupStatus, @"Removing Runberth from the server…", YES);
+                        emit(@"cleanup-execute", @"");
+                    } else {
+                        self.cleanupButton.enabled = YES;
+                        self.cleanupStatus.hidden = YES;
+                    }
+                  }];
+}
 - (void)status:(NSDictionary *)state {
     if (state[@"error"])
         for (NSTextField *label in self.errorLabels)
             setStatus(label, state[@"error"], NO);
     if (state[@"test"])
         setStatus(self.testStatus, state[@"test"], [state[@"test_ok"] boolValue]);
+    if (state[@"cleanup_plan"])
+        [self confirmCleanup:state[@"cleanup_plan"]];
+    if (state[@"cleanup"]) {
+        setStatus(self.cleanupStatus, state[@"cleanup"], [state[@"cleanup_ok"] boolValue]);
+        self.cleanupButton.enabled = YES;
+    }
     if (state[@"token_stored"])
         self.tokenState.stringValue = [state[@"token_stored"] boolValue] ? @"Stored in your keychain"
                                                                          : @"No token stored";

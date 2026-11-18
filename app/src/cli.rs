@@ -17,11 +17,14 @@ Runs Runberth commands on the server named in the desktop app's settings.
   status [--watch [SECONDS]]    the server's memory, lock holder, and runners
   logs OWNER/REPO [--follow] [--lines N]
                                 a repository's lock notes and runner journal
+  cleanup [--execute [--github-removed]]
+                                show, then with --execute remove, everything
+                                Runberth installed on the server
   install [OPTIONS]             set up Runberth on the server; see install --help
   update                        install this app's version on the server
   --version                     this app's version
 
-connect and disconnect need an admin-capable GitHub token. They read it from
+connect, disconnect, and cleanup --execute need an admin-capable GitHub token. They read it from
 stdin when piped, as in `gh auth token | runberth connect OWNER/REPO`, and
 otherwise use the token stored for the app.";
 
@@ -60,6 +63,12 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         ["disconnect", repo, "--github-removed"] if repository(repo) => Some(Parsed::Run(args, false)),
         ["status"] | ["status", "--watch"] | ["status", "--watch", _] => Some(Parsed::Run(args, false)),
         ["logs", repo, ..] if repository(repo) => Some(Parsed::Run(args, false)),
+        ["cleanup"] | ["cleanup", "--execute", "--github-removed"] => Some(Parsed::Run(args, false)),
+        // The server deletes each runner's GitHub registration with the token.
+        ["cleanup", "--execute"] => Some(Parsed::Run(
+            vec!["cleanup", "--execute", "--github-token-stdin"],
+            true,
+        )),
         ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
         ["install" | "update", ..] => match install::parse(&args) {
             Ok(options) => Some(Parsed::Install(options)),
@@ -166,6 +175,20 @@ mod tests {
         assert!(!parsed("status --watch 5").unwrap().1);
         assert!(!parsed("logs o/r --follow").unwrap().1);
         assert_eq!(parsed("update").unwrap().0, ["install update=true"]);
+        assert_eq!(parsed("cleanup").unwrap(), (vec!["cleanup".into()], false));
+        assert_eq!(
+            parsed("cleanup --execute").unwrap(),
+            (
+                vec![
+                    "cleanup".into(),
+                    "--execute".into(),
+                    "--github-token-stdin".into()
+                ],
+                true
+            )
+        );
+        assert!(!parsed("cleanup --execute --github-removed").unwrap().1);
+        assert_eq!(parsed("cleanup --force").unwrap().0, ["print 2"]);
         assert_eq!(parsed("install --swap 3").unwrap().0, ["install update=false"]);
         assert_eq!(parsed("install --swap 9").unwrap().0, ["print 2"]);
         assert_eq!(parsed("update --help").unwrap().0, ["print 0"]);

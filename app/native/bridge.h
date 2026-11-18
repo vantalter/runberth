@@ -44,10 +44,12 @@ void native_set_update_checks(int enabled);
  * check_updates}, "login", "token_stored", "sparkle", "version", "path",
  * "error"}. native_settings_status is thread-safe and updates only the
  * status lines it names: "error", "test" with "test_ok", "token_stored" with
- * "token_message" and "token_ok", and "login".
+ * "token_message" and "token_ok", "login", "cleanup_plan" (asks to confirm
+ * the server's cleanup plan), and "cleanup" with "cleanup_ok".
  *
  * The window reports with runberth_app_event: "settings-change" with the
  * fields as JSON, "settings-test", "token-save" with the token,
- * "token-remove", "settings-file", "login-toggle", and "check-updates". */
+ * "token-remove", "settings-file", "login-toggle", "check-updates",
+ * "cleanup-preview", and "cleanup-execute" once the plan is confirmed. */
 void native_show_settings(const char *window_json);
 void native_settings_status(const char *status_json);
