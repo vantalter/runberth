@@ -52,15 +52,31 @@ func circle(_ center: CGPoint, _ radius: CGFloat) -> CGPath {
            transform: nil)
 }
 
-// The berth: an open hexagon, its entrance at the lower right.
-let frame = stroke(polyline([
-    CGPoint(x: 20.6, y: 13.2), CGPoint(x: 20.6, y: 7.2), CGPoint(x: 12, y: 2.2), CGPoint(x: 3.4, y: 7.2),
-    CGPoint(x: 3.4, y: 16.8), CGPoint(x: 12, y: 21.8), CGPoint(x: 15.6, y: 19.7),
-]), width: 2)
-let hull = svgPath("M4.8 13.4 L17 10.7 C17.8 10.5 18.4 11.2 18.2 12 L17.1 15.8 C16.9 16.6 16.3 17.1 15.5 17.2 L9.2 18.1 C8.5 18.2 7.8 17.9 7.4 17.3 Z")
-let cabin = svgPath("M9.7 8.9 L14.6 7.9 C15.1 7.8 15.5 8.1 15.5 8.6 L15.7 11 L10.2 12.1 Z")
-let window = svgPath("M10.8 9.7 L14.3 9 L14.4 10.3 L11 11 Z")
-let glyph = frame.union(hull).union(cabin.subtracting(window))
+// The glyph is drawn on a 1024-unit square, as the artwork it follows,
+// then scaled onto the 24-unit grid.
+func rounded(_ path: CGPath, _ radius: CGFloat) -> CGPath {
+    path.union(stroke(path, width: 2 * radius))
+}
+// The berth: a hexagon whose lower-right side is a solid ledge, with a step
+// at its left end where the berth opens.
+let frame = stroke(svgPath("M512 160 L840 345 L840 675 L512 862 L182 675 L182 345 Z"), width: 58)
+let ledge = rounded(svgPath("M462 750 L770 590 L840 555 L840 690 L512 878 L462 848 Z"), 10)
+// The boat: a hull whose rim passes behind the cabin, around an open deck,
+// and a cabin with a lid and two windows.
+let hull = rounded(svgPath("M258 572 C268 500 370 440 470 418 L690 405 C735 408 752 428 750 460 L748 590 C700 635 600 678 380 706 C350 709 330 700 320 690 Z"), 6)
+let deck = svgPath("M292 558 C306 506 392 460 462 446 L462 470 L566 506 L690 466 L690 446 C716 446 728 452 728 470 L726 556 C600 574 452 578 292 558 Z")
+let cabin = rounded(svgPath("M462 344 L572 292 L688 330 L688 446 L566 506 L462 466 Z"), 14)
+let windows = svgPath("M480 384 L556 412 L556 464 L480 434 Z M594 414 L668 384 L668 434 L594 464 Z")
+let lid = stroke(svgPath("M456 364 L566 404 L694 360"), width: 13)
+let behindCabin = cabin.union(stroke(cabin, width: 22))
+let artwork = frame.union(ledge)
+    .union(hull.subtracting(deck).subtracting(behindCabin))
+    .union(cabin.subtracting(windows).subtracting(lid))
+// The hexagon's outer edge, x 153 to 869 and y 131 to 891, fills the grid
+// from 1.2 to 22.8 down, centred across.
+let unit: CGFloat = 21.6 / 760
+var toGrid = CGAffineTransform(a: unit, b: 0, c: 0, d: unit, tx: 12 - 511 * unit, ty: 1.2 - 131 * unit)
+let glyph = artwork.copy(using: &toGrid)!
 
 // The badge sits in the berth's entrance, with a gap around it. Its symbols
 // are drawn for a 4.1-unit disc and scaled to the badge's radius.
