@@ -687,6 +687,22 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 }
 @end
 
+/* A line of information in the menu: the server line bold in the text
+ * colour, the rest in the secondary colour, aligned with the item titles. */
+static NSView *infoView(NSString *text, BOOL header) {
+    NSTextField *label = [NSTextField labelWithString:text];
+    label.font = header ? [NSFont boldSystemFontOfSize:NSFont.systemFontSize] : [NSFont menuFontOfSize:0];
+    label.textColor = header ? NSColor.labelColor : NSColor.secondaryLabelColor;
+    [label sizeToFit];
+    // Leaves room for the checkmark column, so the text lines up with titles.
+    CGFloat leading = 17, trailing = 16, height = 22;
+    NSView *view = [[NSView alloc]
+        initWithFrame:NSMakeRect(0, 0, ceil(label.frame.size.width) + leading + trailing, height)];
+    [label setFrameOrigin:NSMakePoint(leading, floor((height - label.frame.size.height) / 2))];
+    [view addSubview:label];
+    return view;
+}
+
 @implementation Tray
 - (void)testConnection:(id)sender {
     // Test what the window shows, not an edit still waiting to be saved.
@@ -784,6 +800,12 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         item.target = self;
         item.tag = [spec[@"id"] integerValue];
         item.enabled = [spec[@"enabled"] boolValue];
+        // Information lines are drawn as plain labels in a custom view, as
+        // Apple's own menu bar extras show status: macOS dims a disabled
+        // item's text whatever its colour, but not a custom view.
+        NSString *style = spec[@"style"];
+        if ([style isEqualToString:@"header"] || [style isEqualToString:@"info"])
+            item.view = infoView(item.title, [style isEqualToString:@"header"]);
         if (spec[@"checked"])
             item.state = [spec[@"checked"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
         NSArray *children = spec[@"children"];

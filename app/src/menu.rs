@@ -68,8 +68,14 @@ impl Builder {
         self.next += 1;
         self.next
     }
+    /// A line of information: not clickable, in the secondary text colour
+    /// rather than the faint one of disabled items.
     fn info(&mut self, label: impl Into<String>) -> Value {
-        json!({"id": self.id(), "label": label.into(), "enabled": false})
+        json!({"id": self.id(), "label": label.into(), "enabled": false, "style": "info"})
+    }
+    /// The menu's first line, naming the server: bold, in the text colour.
+    fn header(&mut self, label: impl Into<String>) -> Value {
+        json!({"id": self.id(), "label": label.into(), "enabled": false, "style": "header"})
     }
     fn item(&mut self, label: impl Into<String>, action: Action) -> Value {
         let id = self.id();
@@ -264,9 +270,9 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     let mut items = Vec::new();
     let status = view.server.as_ref().and_then(|server| server.as_ref().ok());
     match (&view.server_name, &view.server) {
-        (None, _) => items.push(builder.info("No server set — choose Settings…")),
+        (None, _) => items.push(builder.header("No server set — choose Settings…")),
         (Some(name), Some(Ok(status))) => {
-            items.push(builder.info(format!("{name} · Runberth {}", status.version)));
+            items.push(builder.header(format!("{name} · Runberth {}", status.version)));
             if updates::server_is_older(&status.version) {
                 let label = format!("Update Server to {}…", env!("CARGO_PKG_VERSION"));
                 items.push(builder.item(label, Action::UpdateServer));
@@ -298,14 +304,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
             items.push(builder.info(format!("{mode} · {lock}")));
         }
         (Some(name), Some(Err(error))) => {
-            items.push(builder.info(format!("{name} — unreachable")));
+            items.push(builder.header(format!("{name} — unreachable")));
             items.push(builder.info(error.clone()));
             // `runberth update` fixes both: it installs this version and the rule.
             if error.contains("too old") || error.contains("sudoers rule") {
                 items.push(builder.item("Update Server…", Action::UpdateServer));
             }
         }
-        (Some(name), None) => items.push(builder.info(format!("{name} — connecting…"))),
+        (Some(name), None) => items.push(builder.header(format!("{name} — connecting…"))),
     }
     for error in &view.errors {
         items.push(builder.info(error.clone()));
@@ -460,6 +466,8 @@ mod tests {
         assert_eq!(menu["badge"], "");
         let top = labels(&menu["items"]);
         assert_eq!(top[0], "ubuntu@192.0.2.1 · Runberth 0.2.0");
+        assert_eq!(menu["items"][0]["style"], "header");
+        assert_eq!(menu["items"][1]["style"], "info");
         assert_eq!(top[1], "Memory 336 of 951 MiB · swap 100 MiB");
         assert_eq!(top[2], "On demand · idle");
         assert_eq!(top[4], "✓ r — CI passed · 5m ago");
