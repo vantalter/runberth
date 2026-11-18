@@ -244,6 +244,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version, *settingsPath;
 @property NSTextField *cleanupStatus;
 @property NSButton *cleanupButton;
+/* In the cleanup dialog: the host typed to confirm, and the button it enables. */
+@property NSTextField *confirmField;
+@property NSButton *confirmButton;
 @property NSArray<NSTextField *> *errorLabels;
 @property NSTimer *saveTimer;
 @end
@@ -267,15 +270,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.testStatus.hidden = YES;
     NSTextField *error = [self errorLabel];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
-    self.cleanupButton = pushButton(@"Clean Up Server…", self, @selector(cleanup:));
-    self.cleanupButton.hasDestructiveAction = YES;
-    NSTextField *cleanupNote = noteLabel();
-    cleanupNote.stringValue = @"Removes Runberth from the server: every runner and its GitHub registration, "
-                              @"their accounts and caches, and the packages and swap it added. Shows the "
-                              @"plan before anything is removed.";
-    self.cleanupStatus = noteLabel();
-    self.cleanupStatus.hidden = YES;
-    return form(@[
+    NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
         @[ @"User:", self.user ],
         @[ @"Port:", self.port ],
@@ -284,9 +279,58 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         NSNull.null,
         @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus,
                           error ]) ],
-        NSNull.null,
-        @[ @"Remove:", column(@[ self.cleanupButton, cleanupNote, self.cleanupStatus ]) ],
     ]);
+    NSStackView *stack = column(@[ grid, [self dangerZone] ]);
+    stack.spacing = 24;
+    return stack;
+}
+/* Irreversible actions, fenced off as GitHub does: a heading over a
+ * red-bordered box, the action's description beside its button. */
+- (NSView *)dangerZone {
+    NSTextField *heading = [NSTextField labelWithString:@"Danger Zone"];
+    heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 1];
+    NSTextField *title = [NSTextField labelWithString:@"Clean up this server"];
+    title.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
+    NSTextField *note = noteLabel();
+    note.stringValue = @"Removes Runberth from the server: every runner and its GitHub registration, their "
+                       @"accounts and caches, and the packages and swap it added. There is no going back.";
+    self.cleanupStatus = noteLabel();
+    self.cleanupStatus.hidden = YES;
+    self.cleanupButton = pushButton(@"Clean Up Server…", self, @selector(cleanup:));
+    self.cleanupButton.hasDestructiveAction = YES;
+    // Red text, as GitHub's danger buttons have.
+    self.cleanupButton.attributedTitle = [[NSAttributedString alloc]
+        initWithString:self.cleanupButton.title
+            attributes:@{NSForegroundColorAttributeName : NSColor.systemRedColor,
+                         NSFontAttributeName : self.cleanupButton.font}];
+    [self.cleanupButton setContentHuggingPriority:NSLayoutPriorityRequired
+                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *text = column(@[ title, note, self.cleanupStatus ]);
+    NSStackView *line = [NSStackView stackViewWithViews:@[ text, self.cleanupButton ]];
+    line.alignment = NSLayoutAttributeCenterY;
+    line.spacing = 16;
+    line.translatesAutoresizingMaskIntoConstraints = NO;
+    NSBox *box = [[NSBox alloc] init];
+    box.boxType = NSBoxCustom;
+    box.borderColor = NSColor.systemRedColor;
+    box.borderWidth = 1;
+    box.cornerRadius = 6;
+    box.fillColor = NSColor.clearColor;
+    box.titlePosition = NSNoTitle;
+    box.translatesAutoresizingMaskIntoConstraints = NO;
+    // A box sizes to its content only through constraints on that content.
+    NSView *inside = box.contentView;
+    [inside addSubview:line];
+    [NSLayoutConstraint activateConstraints:@[
+        [line.topAnchor constraintEqualToAnchor:inside.topAnchor constant:12],
+        [line.bottomAnchor constraintEqualToAnchor:inside.bottomAnchor constant:-12],
+        [line.leadingAnchor constraintEqualToAnchor:inside.leadingAnchor constant:14],
+        [line.trailingAnchor constraintEqualToAnchor:inside.trailingAnchor constant:-14],
+        [box.widthAnchor constraintEqualToConstant:480],
+    ]];
+    NSStackView *zone = column(@[ heading, box ]);
+    zone.spacing = 8;
+    return zone;
 }
 - (NSView *)github {
     self.tokenState = [NSTextField labelWithString:@""];
@@ -489,7 +533,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     alert.messageText = @"Remove Runberth from the server?";
     alert.informativeText = @"Cleanup removes everything in this plan, including each runner's GitHub "
                             @"registration. It cannot be undone. Change the repositories' runs-on first.";
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 460, 220)];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 460, 150)];
     scroll.hasVerticalScroller = YES;
     scroll.borderType = NSBezelBorder;
     NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
@@ -498,14 +542,35 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     text.string = plan;
     text.autoresizingMask = NSViewWidthSizable;
     scroll.documentView = text;
-    alert.accessoryView = scroll;
+    // As GitHub asks for a repository's name, the server's address confirms.
+    NSString *host = [self.host.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    NSTextField *ask = [NSTextField wrappingLabelWithString:
+        [NSString stringWithFormat:@"To confirm, type %@ below:", host]];
+    ask.preferredMaxLayoutWidth = 460;
+    self.confirmField = [NSTextField textFieldWithString:@""];
+    self.confirmField.placeholderString = host;
+    self.confirmField.delegate = self;
+    [self.confirmField.widthAnchor constraintEqualToConstant:460].active = YES;
+    NSStackView *accessory = column(@[ scroll, ask, self.confirmField ]);
+    accessory.spacing = 8;
+    [scroll.widthAnchor constraintEqualToConstant:460].active = YES;
+    [scroll.heightAnchor constraintEqualToConstant:150].active = YES;
+    accessory.frame = NSMakeRect(0, 0, 460, accessory.fittingSize.height);
+    alert.accessoryView = accessory;
     NSButton *remove = [alert addButtonWithTitle:@"Remove Everything"];
     remove.hasDestructiveAction = YES;
+    remove.enabled = NO;
+    self.confirmButton = remove;
+    self.confirmField.toolTip = host;
     [alert addButtonWithTitle:@"Cancel"].keyEquivalent = @"\033";
     // Return must not confirm by accident.
     remove.keyEquivalent = @"";
+    [alert layout];
+    [alert.window makeFirstResponder:self.confirmField];
     [alert beginSheetModalForWindow:self.window
                   completionHandler:^(NSModalResponse response) {
+                    self.confirmField = nil;
+                    self.confirmButton = nil;
                     if (response == NSAlertFirstButtonReturn) {
                         setStatus(self.cleanupStatus, @"Removing Runberth from the server…", YES);
                         emit(@"cleanup-execute", @"");
@@ -566,6 +631,10 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     emit(@"settings-change", [self formJSON]);
 }
 - (void)controlTextDidChange:(NSNotification *)notification {
+    if (notification.object == self.confirmField) {
+        self.confirmButton.enabled = [self.confirmField.stringValue isEqualToString:self.confirmField.toolTip];
+        return;
+    }
     [self.saveTimer invalidate];
     self.saveTimer = [NSTimer scheduledTimerWithTimeInterval:0.6
                                                      repeats:NO
