@@ -264,6 +264,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
 @property NSButton *confirmButton;
+@property NSAlert *confirmAlert;
 @property NSArray<NSTextField *> *errorLabels;
 @property NSTimer *saveTimer;
 @end
@@ -619,27 +620,35 @@ static NSColor *closeButtonRed(void) {
     self.confirmField.placeholderString = host;
     self.confirmField.delegate = self;
     [self.confirmField.widthAnchor constraintEqualToConstant:460].active = YES;
-    NSStackView *accessory = column(@[ scroll, ask, self.confirmField ]);
+    // Remove Everything is an ordinary button in the dialog's content: an
+    // alert draws its own buttons in fixed colours, and this one turns red
+    // once the host is typed.
+    self.confirmButton = pushButton(@"Remove Everything", self, @selector(confirmRemoval:));
+    // The size of the alert's own Cancel below it.
+    self.confirmButton.controlSize = NSControlSizeLarge;
+    [self.confirmButton.widthAnchor constraintEqualToConstant:228].active = YES;
+    [self armConfirmButton:NO];
+    NSStackView *accessory = column(@[ scroll, ask, self.confirmField, self.confirmButton ]);
     accessory.spacing = 8;
+    [accessory setCustomSpacing:16 afterView:self.confirmField];
+    [self.confirmButton.centerXAnchor constraintEqualToAnchor:accessory.centerXAnchor].active = YES;
     [scroll.widthAnchor constraintEqualToConstant:460].active = YES;
     [scroll.heightAnchor constraintEqualToConstant:150].active = YES;
     accessory.frame = NSMakeRect(0, 0, 460, accessory.fittingSize.height);
     alert.accessoryView = accessory;
-    NSButton *remove = [alert addButtonWithTitle:@"Remove Everything"];
-    remove.hasDestructiveAction = YES;
-    remove.enabled = NO;
-    self.confirmButton = remove;
     self.confirmField.toolTip = host;
-    [alert addButtonWithTitle:@"Cancel"].keyEquivalent = @"\033";
-    // Return must not confirm by accident.
-    remove.keyEquivalent = @"";
+    // The alert's own button: Escape cancels, and Return confirms nothing.
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];
+    cancel.keyEquivalent = @"\033";
+    self.confirmAlert = alert;
     [alert layout];
     [alert.window makeFirstResponder:self.confirmField];
     [alert beginSheetModalForWindow:self.window
                   completionHandler:^(NSModalResponse response) {
                     self.confirmField = nil;
                     self.confirmButton = nil;
-                    if (response == NSAlertFirstButtonReturn) {
+                    self.confirmAlert = nil;
+                    if (response == NSModalResponseOK) {
                         setStatus(self.cleanupStatus, @"Removing Runberth from the server…", YES);
                         emit(@"cleanup-execute", @"");
                     } else {
@@ -647,6 +656,22 @@ static NSColor *closeButtonRed(void) {
                         setStatus(self.cleanupStatus, @"", YES);
                     }
                   }];
+}
+/* Remove Everything is a plain, greyed-out button until the host is typed,
+ * then red with white text, as the Clean Up… button that opened it. */
+/* Remove Everything, enabled only once the typed host matches. */
+- (void)confirmRemoval:(id)sender {
+    [self.window endSheet:self.confirmAlert.window returnCode:NSModalResponseOK];
+}
+- (void)armConfirmButton:(BOOL)armed {
+    NSButton *button = self.confirmButton;
+    button.enabled = armed;
+    button.hasDestructiveAction = armed;
+    button.bezelColor = armed ? closeButtonRed() : nil;
+    NSDictionary *attributes = armed ? @{NSForegroundColorAttributeName : NSColor.whiteColor,
+                                         NSFontAttributeName : button.font}
+                                     : @{NSFontAttributeName : button.font};
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:@"Remove Everything" attributes:attributes];
 }
 - (void)status:(NSDictionary *)state {
     if (state[@"error"])
@@ -700,7 +725,7 @@ static NSColor *closeButtonRed(void) {
 }
 - (void)controlTextDidChange:(NSNotification *)notification {
     if (notification.object == self.confirmField) {
-        self.confirmButton.enabled = [self.confirmField.stringValue isEqualToString:self.confirmField.toolTip];
+        [self armConfirmButton:[self.confirmField.stringValue isEqualToString:self.confirmField.toolTip]];
         return;
     }
     [self.saveTimer invalidate];
