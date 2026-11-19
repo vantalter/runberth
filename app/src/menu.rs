@@ -44,6 +44,8 @@ pub struct View {
     pub server: Option<Result<Status, String>>,
     pub repos: Vec<RepoView>,
     pub errors: Vec<String>,
+    /// Why job results cannot be read: no token, or one GitHub rejects.
+    pub token_error: Option<String>,
     /// 1 on, 0 off, 2 awaiting approval, -1 unsupported.
     pub login: i32,
     /// Sparkle handles updates in the macOS app.
@@ -236,6 +238,11 @@ fn icon(view: &View) -> (&'static str, usize) {
         Some(Ok(status)) => status,
         _ => return ("offline", active),
     };
+    // Without a working token there are no results: a broken setup must not
+    // look like a quiet server.
+    if view.token_error.is_some() {
+        return ("offline", 0);
+    }
     let held = server.lock.as_ref().is_some_and(|lock| !lock.is_empty());
     if active > 0 || held {
         return ("running", active);
@@ -307,7 +314,7 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         }
         (Some(name), None) => items.push(builder.info(format!("{name} — connecting…"))),
     }
-    for error in &view.errors {
+    for error in view.token_error.iter().chain(&view.errors) {
         items.push(builder.info(error.clone()));
     }
     items.push(builder.separator());
@@ -399,6 +406,9 @@ fn menu_settings(builder: &mut Builder, view: &View, items: &mut Vec<Value>) {
 fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u32, Action>) {
     let (icon, active) = icon(view);
     let tooltip = match icon {
+        "offline" if view.token_error.is_some() => {
+            "Runberth — job results need a working GitHub token".to_owned()
+        }
         "offline" => "Runberth — server unreachable".to_owned(),
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
@@ -454,6 +464,7 @@ mod tests {
                 jobs: HashMap::new(),
             }],
             errors: vec![],
+            token_error: None,
             login: 0,
             sparkle: false,
             update: updates::Status::Idle,
@@ -628,6 +639,23 @@ mod tests {
             !labels(&current["items"])
                 .iter()
                 .any(|label| label.starts_with("Update Server"))
+        );
+    }
+
+    #[test]
+    fn a_token_problem_is_shown_at_the_top_with_the_offline_badge() {
+        let mut broken = view(Some(Ok(status(vec![]))), vec![]);
+        broken.repos[0].runs = Err(crate::github::REJECTED.into());
+        broken.token_error = Some("GitHub rejected the token — replace it in Settings…".into());
+        let (menu, _) = build(&broken);
+        assert_eq!(menu["icon"], "offline");
+        assert_eq!(
+            menu["tooltip"],
+            "Runberth — job results need a working GitHub token"
+        );
+        assert_eq!(
+            labels(&menu["items"])[3],
+            "GitHub rejected the token — replace it in Settings…"
         );
     }
 

@@ -458,6 +458,19 @@ struct Poller {
     check_updates: bool,
     /// Private repositories to connect, and when they were listed.
     candidates: Option<(Instant, Vec<String>)>,
+    /// Whether the rejected token was already announced, so it is announced
+    /// once until a token works again.
+    rejection_announced: bool,
+}
+
+/// How to replace a token GitHub rejects, where this platform keeps it.
+fn rejected_line() -> String {
+    let fix = if cfg!(target_os = "macos") {
+        "replace it in Settings…"
+    } else {
+        "store a new one with secret-tool"
+    };
+    format!("{} — {fix}", github::REJECTED)
 }
 
 impl Poller {
@@ -484,12 +497,13 @@ impl Poller {
             errors.push("The server account cannot list repositories; reinstall with --sudoers".into());
         }
         let runners = runners.unwrap_or_default();
+        let mut token_error = None;
         let github = match token::read(&config) {
             Ok(token) => Some(github::GitHub::new(token)),
             Err(error) => {
                 // Without repositories there are no results to miss.
                 if !runners.is_empty() {
-                    errors.push(error);
+                    token_error = Some(error);
                 }
                 None
             }
@@ -532,6 +546,23 @@ impl Poller {
         }
         let names: Vec<String> = repos.iter().map(|repo| repo.repo.clone()).collect();
         self.tracker.retain(&names);
+        let rejected = repos
+            .iter()
+            .any(|repo| repo.runs.as_ref().is_err_and(|error| error == github::REJECTED));
+        if rejected {
+            token_error = Some(rejected_line());
+            if !self.rejection_announced && config.notifications != config::Notifications::Off {
+                native::notify(
+                    "GitHub rejected Runberth's token",
+                    "It may have expired. Replace it to see job results again.",
+                    "https://github.com/settings/tokens",
+                );
+            }
+        }
+        // Announced again only after a token has worked in between.
+        if github.is_some() {
+            self.rejection_announced = rejected;
+        }
 
         let sparkle = SPARKLE.load(Ordering::Relaxed);
         let due = self
@@ -547,6 +578,7 @@ impl Poller {
             server: result,
             repos,
             errors,
+            token_error,
             login: LOGIN.load(Ordering::Relaxed),
             sparkle,
             update: self.update.clone(),
@@ -571,6 +603,7 @@ fn poll(receiver: Receiver<Wake>) {
         update_checked: None,
         check_updates: false,
         candidates: None,
+        rejection_announced: false,
     };
     loop {
         let view = poller.refresh();

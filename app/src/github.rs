@@ -6,6 +6,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 const API: &str = "https://api.github.com";
+/// The error for a token GitHub no longer accepts, such as an expired one.
+pub const REJECTED: &str = "GitHub rejected the token";
 
 /// RUNBERTH_APP_GITHUB_API replaces the API in tests/tray_linux.py.
 fn api() -> String {
@@ -84,7 +86,7 @@ impl GitHub {
             .set("X-GitHub-Api-Version", "2022-11-28")
             .call()
             .map_err(|error| match error {
-                ureq::Error::Status(401, _) => "GitHub rejected the token".to_owned(),
+                ureq::Error::Status(401, _) => REJECTED.to_owned(),
                 ureq::Error::Status(403 | 404, _) => {
                     "The GitHub token cannot read this repository's Actions".to_owned()
                 }
