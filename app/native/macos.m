@@ -223,10 +223,25 @@ static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content) {
     return item;
 }
 
+/* A status line that always takes one line, empty or not, so a message
+ * never changes the window's size; a long one is cut short, and the full
+ * text shows on hover. */
+static NSTextField *statusLine(CGFloat width) {
+    NSTextField *label = [NSTextField labelWithString:@" "];
+    label.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    label.textColor = NSColor.secondaryLabelColor;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.maximumNumberOfLines = 1;
+    label.usesSingleLineMode = YES;
+    [label.widthAnchor constraintEqualToConstant:width].active = YES;
+    return label;
+}
+
 static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
-    label.stringValue = text ?: @"";
+    // A space keeps the line's height while it is empty.
+    label.stringValue = text.length ? text : @" ";
+    label.toolTip = text.length ? text : nil;
     label.textColor = ok ? NSColor.secondaryLabelColor : NSColor.systemRedColor;
-    label.hidden = !label.stringValue.length;
 }
 
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
@@ -253,9 +268,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 
 @implementation Settings
 - (NSTextField *)errorLabel {
-    NSTextField *label = noteLabel();
-    label.hidden = YES;
-    return label;
+    return statusLine(300);
 }
 - (NSView *)server {
     self.host = textField(@"203.0.113.10 or vps.example.com", 260, self);
@@ -266,10 +279,10 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     keyNote.stringValue = @"Leave empty to use your SSH agent and ~/.ssh/config. For localhost on port 22 "
                           @"the app runs Runberth on this computer, without SSH. The server's host key "
                           @"must already be known: connect once with ssh first.";
-    self.testStatus = noteLabel();
-    self.testStatus.hidden = YES;
-    NSTextField *error = [self errorLabel];
-    self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
+    // One line for the test's result and the settings' errors, which also
+    // replace a result that the edit made stale.
+    self.testStatus = statusLine(300);
+    self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:self.testStatus];
     NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
         @[ @"User:", self.user ],
@@ -277,65 +290,80 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         @[ @"SSH key:", column(@[ row(@[ self.key, pushButton(@"Choose…", self, @selector(chooseKey:)) ]),
                                   keyNote ]) ],
         NSNull.null,
-        @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus,
-                          error ]) ],
+        @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus ]) ],
     ]);
-    NSStackView *stack = column(@[ grid, [self dangerZone] ]);
-    stack.spacing = 24;
+    NSBox *line = [[NSBox alloc] init];
+    line.boxType = NSBoxSeparator;
+    NSView *cleanup = [self cleanupSection];
+    NSStackView *stack = column(@[ grid, line, cleanup ]);
+    stack.spacing = 18;
+    // The line and the cleanup section span the form, so the red button's
+    // right edge lines up with the Choose… button's.
+    [NSLayoutConstraint activateConstraints:@[
+        [line.widthAnchor constraintEqualToAnchor:grid.widthAnchor],
+        [cleanup.widthAnchor constraintEqualToAnchor:grid.widthAnchor],
+    ]];
     return stack;
 }
-/* Irreversible actions, fenced off as GitHub does: a red-bordered box, the
- * action's description beside its button. */
-- (NSView *)dangerZone {
-    NSTextField *title = [NSTextField labelWithString:@"Clean up this server"];
-    title.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
-    NSTextField *note = noteLabel();
-    note.stringValue = @"Removes Runberth from the server: every runner and its GitHub registration, their "
-                       @"accounts and caches, and the packages and swap it added. There is no going back.";
-    self.cleanupStatus = noteLabel();
-    self.cleanupStatus.hidden = YES;
-    // The title beside it names what is cleaned up.
+/* Cleanup, which cannot be undone: a warning and what it removes, beside a
+ * red button. The dialog it opens shows the server's full plan. */
+/* The red of a window's close button, which AppKit has no name for. */
+static NSColor *closeButtonRed(void) {
+    return [NSColor colorWithSRGBRed:255 / 255.0 green:95 / 255.0 blue:87 / 255.0 alpha:1];
+}
+- (NSView *)cleanupSection {
+    NSImageView *icon = [NSImageView
+        imageViewWithImage:[NSImage imageWithSystemSymbolName:@"exclamationmark.circle.fill"
+                                     accessibilityDescription:@"Warning"]];
+    icon.contentTintColor = closeButtonRed();
+    NSTextField *warning = [NSTextField labelWithString:@"Warning: This action is destructive."];
+    NSStackView *heading = row(@[ icon, warning ]);
+    heading.spacing = 6;
+    NSMutableArray<NSView *> *lines = [NSMutableArray arrayWithObject:heading];
+    for (NSString *removed in @[
+             @"Removes every runner and its GitHub registration.",
+             @"Deletes runner accounts and caches.",
+             @"Removes the packages and swap Runberth added.",
+         ]) {
+        NSTextField *bullet = [NSTextField labelWithString:[@"•  " stringByAppendingString:removed]];
+        bullet.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+        bullet.textColor = NSColor.secondaryLabelColor;
+        [lines addObject:bullet];
+    }
+    self.cleanupStatus = statusLine(300);
+    [lines addObject:self.cleanupStatus];
+    NSStackView *text = column(lines);
+    text.spacing = 4;
+    // The bullets line up with the warning's text, past its icon.
+    for (NSView *view in lines)
+        if (view != heading)
+            [text setCustomSpacing:4 afterView:view];
+    for (NSView *view in [lines subarrayWithRange:NSMakeRange(1, lines.count - 1)])
+        [view.leadingAnchor constraintEqualToAnchor:warning.leadingAnchor].active = YES;
+
+    // Red with white text, so it cannot pass for an ordinary button.
     self.cleanupButton = pushButton(@"Clean Up…", self, @selector(cleanup:));
     self.cleanupButton.hasDestructiveAction = YES;
-    // Red text, as GitHub's danger buttons have.
+    self.cleanupButton.bezelColor = closeButtonRed();
     self.cleanupButton.attributedTitle = [[NSAttributedString alloc]
         initWithString:self.cleanupButton.title
-            attributes:@{NSForegroundColorAttributeName : NSColor.systemRedColor,
+            attributes:@{NSForegroundColorAttributeName : NSColor.whiteColor,
                          NSFontAttributeName : self.cleanupButton.font}];
     [self.cleanupButton setContentHuggingPriority:NSLayoutPriorityRequired
                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *text = column(@[ title, note, self.cleanupStatus ]);
-    NSStackView *line = [NSStackView stackViewWithViews:@[ text, self.cleanupButton ]];
-    line.alignment = NSLayoutAttributeCenterY;
-    line.spacing = 16;
-    line.translatesAutoresizingMaskIntoConstraints = NO;
-    NSBox *box = [[NSBox alloc] init];
-    box.boxType = NSBoxCustom;
-    box.borderColor = NSColor.systemRedColor;
-    box.borderWidth = 1;
-    box.cornerRadius = 6;
-    box.fillColor = NSColor.clearColor;
-    box.titlePosition = NSNoTitle;
-    box.translatesAutoresizingMaskIntoConstraints = NO;
-    // A box sizes to its content only through constraints on that content.
-    NSView *inside = box.contentView;
-    [inside addSubview:line];
-    [NSLayoutConstraint activateConstraints:@[
-        [line.topAnchor constraintEqualToAnchor:inside.topAnchor constant:12],
-        [line.bottomAnchor constraintEqualToAnchor:inside.bottomAnchor constant:-12],
-        [line.leadingAnchor constraintEqualToAnchor:inside.leadingAnchor constant:14],
-        [line.trailingAnchor constraintEqualToAnchor:inside.trailingAnchor constant:-14],
-        [box.widthAnchor constraintEqualToConstant:480],
-    ]];
-    return box;
+    NSView *spacer = [[NSView alloc] init];
+    [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                       forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *section = [NSStackView stackViewWithViews:@[ text, spacer, self.cleanupButton ]];
+    section.alignment = NSLayoutAttributeTop;
+    return section;
 }
 - (NSView *)github {
     self.tokenState = [NSTextField labelWithString:@""];
     self.token = [[NSSecureTextField alloc] init];
     self.token.placeholderString = @"github_pat_… or ghp_…";
     [self.token.widthAnchor constraintEqualToConstant:260].active = YES;
-    self.tokenMessage = noteLabel();
-    self.tokenMessage.hidden = YES;
+    self.tokenMessage = statusLine(300);
     NSTextField *tokenNote = noteLabel();
     tokenNote.stringValue = @"Showing runs needs Actions: Read. Connecting and disconnecting repositories "
                             @"also needs Administration: Read and write, and Contents: Read. A classic "
@@ -366,8 +394,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     self.notifications.target = self;
     self.notifications.action = @selector(changed:);
     self.loginBox = [NSButton checkboxWithTitle:@"Launch at Login" target:self action:@selector(toggleLogin:)];
-    self.loginNote = noteLabel();
-    self.loginNote.hidden = YES;
+    self.loginNote = statusLine(300);
     NSTextField *error = [self errorLabel];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
     // Selectable, so the path can be copied.
@@ -502,7 +529,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
                 [self.notifications selectItem:item];
         self.updatesBox.state = [fields[@"check_updates"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
         self.token.stringValue = @"";
-        self.testStatus.hidden = self.tokenMessage.hidden = YES;
+        setStatus(self.testStatus, @"", YES);
+        setStatus(self.tokenMessage, @"", YES);
         self.version.stringValue = [NSString stringWithFormat:@"%@", state[@"version"]];
         // With the home folder as ~, as people write it.
         self.settingsPath.stringValue = [state[@"path"] ?: @"" stringByAbbreviatingWithTildeInPath];
@@ -573,7 +601,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
                         emit(@"cleanup-execute", @"");
                     } else {
                         self.cleanupButton.enabled = YES;
-                        self.cleanupStatus.hidden = YES;
+                        setStatus(self.cleanupStatus, @"", YES);
                     }
                   }];
 }
