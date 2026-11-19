@@ -344,6 +344,29 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         "Settings…"
     };
     items.push(builder.item(settings, Action::Settings));
+    // On macOS, Launch at Login and update checks live in the Settings
+    // window, as in insomemo; the menu only says when an update is available.
+    if SETTINGS_WINDOW {
+        if let updates::Status::Available(tag) = &view.update {
+            items.push(builder.item(
+                format!("Update {tag} available — Open Releases"),
+                Action::Open(updates::RELEASES_PAGE.into()),
+            ));
+        }
+    } else {
+        menu_settings(&mut builder, view, &mut items);
+    }
+    items.push(builder.separator());
+    items.push(builder.item("Quit", Action::Quit));
+    finish(builder, view, items)
+}
+
+/// Whether this platform has a Settings window for the app's options.
+const SETTINGS_WINDOW: bool = cfg!(target_os = "macos");
+
+/// Launch at Login and update checks, in the menu where there is no
+/// Settings window.
+fn menu_settings(builder: &mut Builder, view: &View, items: &mut Vec<Value>) {
     if view.login >= 0 {
         let label = if view.login == 2 {
             "Launch at Login (needs approval)"
@@ -371,9 +394,9 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
             }
         }
     }
-    items.push(builder.separator());
-    items.push(builder.item("Quit", Action::Quit));
+}
 
+fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u32, Action>) {
     let (icon, active) = icon(view);
     let tooltip = match icon {
         "offline" => "Runberth — server unreachable".to_owned(),
@@ -472,15 +495,17 @@ mod tests {
             Action::Open("https://github.com/o/r/actions/runs/1".into())
         );
         assert!(top.contains(&"Quit".to_owned()));
-        assert_eq!(
-            menu["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|item| item["label"] == "Launch at Login")
-                .unwrap()["checked"],
-            false
-        );
+        let login = menu["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == "Launch at Login");
+        if SETTINGS_WINDOW {
+            // In Settings > General instead.
+            assert!(login.is_none());
+        } else {
+            assert_eq!(login.unwrap()["checked"], false);
+        }
     }
 
     #[test]
@@ -641,8 +666,15 @@ mod tests {
         let mut view = view(Some(Ok(status(vec![]))), vec![]);
         view.sparkle = true;
         let (menu, actions) = build(&view);
-        assert!(labels(&menu["items"]).contains(&"Check for Updates…".to_owned()));
-        assert!(actions.values().any(|action| *action == Action::CheckUpdates));
+        // macOS checks from Settings > Updates; Linux has no Settings window.
+        let checks = actions.values().any(|action| *action == Action::CheckUpdates);
+        assert_eq!(checks, !SETTINGS_WINDOW);
+        assert!(
+            !labels(&menu["items"])
+                .iter()
+                .any(|label| label.starts_with("Check for Updates"))
+                || !SETTINGS_WINDOW
+        );
         view.sparkle = false;
         view.update = updates::Status::Available("v0.3.0".into());
         let (menu, actions) = build(&view);

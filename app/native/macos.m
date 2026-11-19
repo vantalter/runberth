@@ -284,11 +284,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     stack.spacing = 24;
     return stack;
 }
-/* Irreversible actions, fenced off as GitHub does: a heading over a
- * red-bordered box, the action's description beside its button. */
+/* Irreversible actions, fenced off as GitHub does: a red-bordered box, the
+ * action's description beside its button. */
 - (NSView *)dangerZone {
-    NSTextField *heading = [NSTextField labelWithString:@"Danger Zone"];
-    heading.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize + 1];
     NSTextField *title = [NSTextField labelWithString:@"Clean up this server"];
     title.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
     NSTextField *note = noteLabel();
@@ -296,7 +294,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
                        @"accounts and caches, and the packages and swap it added. There is no going back.";
     self.cleanupStatus = noteLabel();
     self.cleanupStatus.hidden = YES;
-    self.cleanupButton = pushButton(@"Clean Up Server…", self, @selector(cleanup:));
+    // The title beside it names what is cleaned up.
+    self.cleanupButton = pushButton(@"Clean Up…", self, @selector(cleanup:));
     self.cleanupButton.hasDestructiveAction = YES;
     // Red text, as GitHub's danger buttons have.
     self.cleanupButton.attributedTitle = [[NSAttributedString alloc]
@@ -328,9 +327,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         [line.trailingAnchor constraintEqualToAnchor:inside.trailingAnchor constant:-14],
         [box.widthAnchor constraintEqualToConstant:480],
     ]];
-    NSStackView *zone = column(@[ heading, box ]);
-    zone.spacing = 8;
-    return zone;
+    return box;
 }
 - (NSView *)github {
     self.tokenState = [NSTextField labelWithString:@""];

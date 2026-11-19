@@ -20,12 +20,12 @@ The app only reads. It changes nothing on the server or in GitHub.
 
 From the [latest release](https://github.com/vantalter/runberth/releases/latest):
 
-- **macOS 12 or later:** download `Runberth-VERSION-macos-universal.dmg`, open it, and drag Runberth to Applications. The app updates itself with Sparkle; choose **Check for Updates…** in its menu to check now.
+- **macOS 12 or later:** download `Runberth-VERSION-macos-universal.dmg`, open it, and drag Runberth to Applications. The app updates itself with Sparkle; choose **Check Now…** in Settings > Updates to check now.
 - **Linux:** install `runberth-app_VERSION_amd64.deb` (or `arm64`) with `sudo apt install ./runberth-app_*.deb`, or the `.rpm` with `sudo dnf install ./runberth-app-*.rpm`, then start **Runberth** from your applications. The menu shows when a newer release is available.
 
 On GNOME, which has no tray of its own, install and enable the AppIndicator extension, for example `sudo apt install gnome-shell-extension-appindicator` on Ubuntu, then log out and back in.
 
-Choose **Launch at Login** in the menu to start the app with your session.
+To start the app with your session, turn on **Launch at Login** in Settings > General on macOS, or in the menu on Linux.
 
 ## Set it up
 
