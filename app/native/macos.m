@@ -258,6 +258,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSArray<NSGridRow *> *sparkleRows;
 @property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version, *settingsPath;
 @property NSTextField *cleanupStatus;
+/* Whether macOS lets the app show notifications. */
+@property NSTextField *notificationsStatus;
 @property NSButton *cleanupButton;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
@@ -402,7 +404,7 @@ static NSColor *closeButtonRed(void) {
     self.settingsPath.selectable = YES;
     return form(@[
         @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
-        @[ @"Notifications:", self.notifications ],
+        @[ @"Notifications:", column(@[ self.notifications, [self notificationPermission] ]) ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
         NSNull.null,
         @[ @"Settings file:", column(@[ self.settingsPath, pushButton(@"Open settings.json", self, @selector(openFile:)) ]) ],
@@ -489,7 +491,47 @@ static NSColor *closeButtonRed(void) {
                                                                          timeStyle:NSDateFormatterMediumStyle]
                                         : @"Never";
 }
+/* The permission macOS gives the app, beside a button to its page in
+ * System Settings; both always take their space, so the window keeps its
+ * size whatever the permission. */
+- (NSView *)notificationPermission {
+    self.notificationsStatus = statusLine(220);
+    NSStackView *line = row(@[ self.notificationsStatus,
+                               pushButton(@"Notification Settings…", self, @selector(openNotificationSettings:)) ]);
+    line.alignment = NSLayoutAttributeCenterY;
+    return line;
+}
+- (void)refreshNotificationPermission {
+    if (!tray.canNotify) {
+        setStatus(self.notificationsStatus, @"Available in the Runberth app", YES);
+        return;
+    }
+    [UNUserNotificationCenter.currentNotificationCenter
+        getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            switch (settings.authorizationStatus) {
+            case UNAuthorizationStatusDenied:
+                setStatus(self.notificationsStatus,
+                          @"Off for Runberth in System Settings — notifications are not shown", NO);
+                break;
+            case UNAuthorizationStatusNotDetermined:
+                setStatus(self.notificationsStatus, @"Not yet allowed", YES);
+                break;
+            default:
+                setStatus(self.notificationsStatus, @"Allowed in System Settings", YES);
+            }
+          });
+        }];
+}
+- (void)openNotificationSettings:(id)sender {
+    NSString *page = [@"x-apple.systempreferences:com.apple.Notifications-Settings.extension?id="
+        stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
+    if (![NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:page]])
+        [NSWorkspace.sharedWorkspace
+            openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.notifications"]];
+}
 - (void)windowDidBecomeKey:(NSNotification *)notification {
+    [self refreshNotificationPermission];
     [self refreshUpdates];
 }
 - (void)chooseInterval:(NSPopUpButton *)sender {
@@ -535,6 +577,7 @@ static NSColor *closeButtonRed(void) {
         // With the home folder as ~, as people write it.
         self.settingsPath.stringValue = [state[@"path"] ?: @"" stringByAbbreviatingWithTildeInPath];
     }
+    [self refreshNotificationPermission];
     [self refreshUpdates];
     [self status:state];
     [NSApp activateIgnoringOtherApps:YES];
