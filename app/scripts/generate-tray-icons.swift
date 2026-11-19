@@ -78,9 +78,10 @@ let unit: CGFloat = 21.6 / 760
 var toGrid = CGAffineTransform(a: unit, b: 0, c: 0, d: unit, tx: 12 - 511 * unit, ty: 1.2 - 131 * unit)
 let glyph = artwork.copy(using: &toGrid)!
 
-// The badge sits in the berth's entrance, with a gap around it. Its symbols
+// The badge sits at the top left, clear of the boat and the ledge, with a
+// gap around it. Its symbols
 // are drawn for a 4.1-unit disc and scaled to the badge's radius.
-let center = CGPoint(x: 19, y: 18.9)
+let center = CGPoint(x: 4.9, y: 4.9)
 let radius: CGFloat = 4.9
 let scale = radius / 4.1
 /// A point `dx`, `dy` units from the badge's centre, at the 4.1-unit design size.
