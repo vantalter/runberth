@@ -48,21 +48,31 @@ static NSImage *layer(const unsigned char *png, size_t length) {
 
 /* The berth and boat in the menu bar's text colour, with a coloured badge in
  * the berth's entrance: a grey cross when the server is unreachable, a green
- * check when the latest runs passed, a red "!" when one failed, and an orange
+ * check when the latest runs passed, a red "!" when one failed, an amber
+ * warning triangle when job results need a working GitHub token, and an orange
  * spinner, turned `angle` degrees, while jobs run. "idle" has no badge. */
 static NSImage *trayIcon(NSString *state, CGFloat angle) {
-    static NSImage *glyph, *cut, *success, *failed, *offline, *running;
+    static NSImage *glyph, *cut, *cutAttention, *success, *failed, *offline, *attention, *running;
     if (!glyph) {
         glyph = layer(tray_glyph, sizeof tray_glyph);
         cut = layer(tray_glyph_cut, sizeof tray_glyph_cut);
         success = layer(tray_success, sizeof tray_success);
         failed = layer(tray_failed, sizeof tray_failed);
         offline = layer(tray_offline, sizeof tray_offline);
+        cutAttention = layer(tray_glyph_cut_attention, sizeof tray_glyph_cut_attention);
+        attention = layer(tray_attention, sizeof tray_attention);
         running = layer(tray_running, sizeof tray_running);
     }
-    NSDictionary *badges = @{@"success" : success, @"failed" : failed, @"offline" : offline, @"running" : running};
+    NSDictionary *badges = @{
+        @"success" : success,
+        @"failed" : failed,
+        @"offline" : offline,
+        @"attention" : attention,
+        @"running" : running
+    };
     NSImage *badge = badges[state];
-    NSImage *shape = badge ? cut : glyph;
+    // The triangle needs its own cut-out; the round badges share one.
+    NSImage *shape = !badge ? glyph : [state isEqualToString:@"attention"] ? cutAttention : cut;
     // Not a template, so the badge keeps its colour: the handler tints the
     // glyph for the appearance it is drawn in, light or dark menu bar.
     NSImage *icon = [NSImage imageWithSize:NSMakeSize(20, 20)

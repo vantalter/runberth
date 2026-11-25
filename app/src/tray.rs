@@ -456,9 +456,10 @@ fn publish(view: &View) {
 /// Everything shown for one refresh.
 struct Poller {
     tracker: runs::Tracker,
-    /// The last answer from the server, so repositories stay listed while it
-    /// is briefly unreachable.
-    last_status: Option<server::Status>,
+    /// The last answer from the server, and the server it came from, so
+    /// repositories stay listed while it is unreachable, but never under
+    /// another server's name.
+    last_status: Option<(config::Server, server::Status)>,
     update: updates::Status,
     update_checked: Option<Instant>,
     check_updates: bool,
@@ -480,6 +481,22 @@ fn rejected_line() -> String {
 }
 
 impl Poller {
+    /// Keeps the server's latest answer, and forgets it when the settings
+    /// name another server; returns the answer to list repositories from.
+    fn remember(
+        &mut self,
+        server: Option<&config::Server>,
+        result: Option<&Result<server::Status, String>>,
+    ) -> Option<&server::Status> {
+        if self.last_status.as_ref().map(|(from, _)| from) != server {
+            self.last_status = None;
+        }
+        if let (Some(from), Some(Ok(status))) = (server, result) {
+            self.last_status = Some((from.clone(), status.clone()));
+        }
+        self.last_status.as_ref().map(|(_, status)| status)
+    }
+
     fn refresh(&mut self) -> View {
         let mut errors = Vec::new();
         let config = config::load(&config::settings_path()).unwrap_or_else(|error| {
@@ -488,20 +505,12 @@ impl Poller {
         });
         let server = config.server().cloned();
         let result = server.as_ref().map(server::fetch);
-        if let Some(Ok(status)) = &result {
-            if let Ok(mut summary) = SERVER_SUMMARY.lock() {
-                *summary = Some(report::server_summary(status));
-            }
-            self.last_status = Some(status.clone());
+        let last_status = self.remember(server.as_ref(), result.as_ref());
+        if let Ok(mut summary) = SERVER_SUMMARY.lock() {
+            *summary = last_status.map(report::server_summary);
         }
-        let runners = self
-            .last_status
-            .as_ref()
-            .and_then(|status| status.runners.clone());
-        if self
-            .last_status
-            .as_ref()
-            .is_some_and(|status| status.runners.is_none())
+        let runners = last_status.and_then(|status| status.runners.clone());
+        if last_status.is_some_and(|status| status.runners.is_none())
         {
             errors.push("The server account cannot list repositories; reinstall with --sudoers".into());
         }
@@ -667,11 +676,12 @@ macro_rules! tray_icons {
 }
 
 #[cfg(target_os = "linux")]
-const TRAY_ICONS: [(&str, &str); 12] = tray_icons![
+const TRAY_ICONS: [(&str, &str); 13] = tray_icons![
     "",
     "-success",
     "-failed",
     "-offline",
+    "-attention",
     "-running-0",
     "-running-1",
     "-running-2",
@@ -709,4 +719,41 @@ pub extern "C" fn runberth_app_main() -> c_int {
     let status = unsafe { native::native_run() };
     wake(Wake::Stop);
     status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poller() -> Poller {
+        Poller {
+            tracker: runs::Tracker::default(),
+            last_status: None,
+            update: updates::Status::Idle,
+            update_checked: None,
+            check_updates: false,
+            candidates: None,
+            rejection_announced: false,
+        }
+    }
+
+    fn server(host: &str) -> config::Server {
+        let settings = format!(r#"{{"server": {{"host": "{host}"}}}}"#);
+        config::Config::parse(&settings).unwrap().server().unwrap().clone()
+    }
+
+    #[test]
+    fn the_last_answer_belongs_to_its_server() {
+        let status = server::Status::parse(r#"{"format": 1, "version": "0.2.0", "mode": "on-demand"}"#).unwrap();
+        let (first, second) = (server("192.0.2.1"), server("192.0.2.2"));
+        let mut poller = poller();
+        assert_eq!(poller.remember(Some(&first), Some(&Ok(status.clone()))), Some(&status));
+        // Unreachable: the repositories stay listed from the last answer.
+        let timeout = Err("Connection timed out".to_owned());
+        assert_eq!(poller.remember(Some(&first), Some(&timeout)), Some(&status));
+        // Another server: nothing is known about it yet.
+        assert_eq!(poller.remember(Some(&second), Some(&timeout)), None);
+        assert_eq!(poller.remember(Some(&first), Some(&timeout)), None);
+        assert_eq!(poller.remember(None, None), None);
+    }
 }

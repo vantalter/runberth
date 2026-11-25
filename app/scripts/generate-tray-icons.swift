@@ -1,8 +1,9 @@
 // Generates the tray icons from one geometry, on a 24-unit grid:
 //   swift app/scripts/generate-tray-icons.swift app/assets/tray
 //
-// macOS (40-pixel PNGs, drawn at 20 points): the glyph as a template, a copy
-// cut out for a badge, and the coloured badges; the app tints the glyph with
+// macOS (40-pixel PNGs, drawn at 20 points): the glyph as a template, copies
+// cut out for the round badges and for the attention triangle, and the
+// coloured badges; the app tints the glyph with
 // the menu bar's text colour and rotates the running badge.
 //
 // Linux (linux/*.svg): symbolic icons, one per state and eight frames for the
@@ -96,6 +97,14 @@ let exclamation = CGPath(roundedRect: CGRect(origin: at(-0.68, -2.7), size: CGSi
     .union(circle(at(0, 2.35), 0.78 * scale))
 let cross = stroke(polyline([at(-1.5, -1.5), at(1.5, 1.5)]), width: 1.4 * scale)
     .union(stroke(polyline([at(1.5, -1.5), at(-1.5, 1.5)]), width: 1.4 * scale))
+// The attention badge is a warning triangle, so it differs from the round
+// badges by its shape alone, as in the one-colour Linux icons. It fills the
+// same corner, and the glyph is cut around the triangle instead of a disc.
+let triangle = rounded(svgPath("M4.9 0.9 L9.05 8.1 L0.75 8.1 Z"), 0.7)
+let triangleCut = glyph.subtracting(triangle.union(stroke(triangle, width: 2)))
+let mark = CGPath(roundedRect: CGRect(x: 4.3, y: 3.2, width: 1.2, height: 2.75),
+                  cornerWidth: 0.6, cornerHeight: 0.6, transform: nil)
+    .union(circle(CGPoint(x: 4.9, y: 7.0), 0.65))
 /// Three quarters of a ring, starting at the top, rotated by `degrees`.
 func spinner(_ degrees: CGFloat) -> CGPath {
     let arc = CGMutablePath()
@@ -142,6 +151,12 @@ png("glyph-cut") { fill($0, cut, .black) }
 badge("badge-success", NSColor(srgbRed: 0.20, green: 0.70, blue: 0.33, alpha: 1), check)
 badge("badge-failed", NSColor(srgbRed: 0.92, green: 0.23, blue: 0.20, alpha: 1), exclamation)
 badge("badge-offline", NSColor(srgbRed: 0.56, green: 0.56, blue: 0.58, alpha: 1), cross)
+png("glyph-cut-attention") { fill($0, triangleCut, .black) }
+// Amber with a dark mark, as macOS draws its warning triangles.
+png("badge-attention") { context in
+    fill(context, triangle, NSColor(srgbRed: 1, green: 0.77, blue: 0.04, alpha: 1))
+    fill(context, mark, NSColor(white: 0.12, alpha: 1))
+}
 // Unrotated; the app turns it around the badge's centre.
 // Orange like the boat's cabin, and unlike blue, visible on a tinted menu bar.
 png("badge-running") { fill($0, spinner(0), NSColor(srgbRed: 1, green: 0.58, blue: 0.05, alpha: 1)) }
@@ -181,6 +196,7 @@ symbolic("", glyph)
 symbolic("-success", cut.union(disc.subtracting(check)))
 symbolic("-failed", cut.union(disc.subtracting(exclamation)))
 symbolic("-offline", cut.union(disc.subtracting(cross)))
+symbolic("-attention", triangleCut.union(triangle.subtracting(mark)))
 for frame in 0..<8 {
     symbolic("-running-\(frame)", cut.union(spinner(CGFloat(frame) * 45)))
 }

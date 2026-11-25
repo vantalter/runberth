@@ -120,6 +120,9 @@ fn job_label(job: &Job) -> String {
     }
 }
 
+/// A connected repository's submenu. `server` is None while the server does
+/// not answer: the repository is listed from its last answer, without the
+/// runner's state or the actions that need the server.
 fn repo_item(
     builder: &mut Builder,
     view: &RepoView,
@@ -153,7 +156,9 @@ fn repo_item(
         }
     };
     let mut status = Vec::new();
-    if let Some(holder) = holder {
+    if server.is_none() {
+        status.push("Server unreachable — runner state unknown".to_owned());
+    } else if let Some(holder) = holder {
         status.push(format!(
             "Running on the server for {}",
             span(holder.seconds as i64)
@@ -175,6 +180,11 @@ fn repo_item(
         "Open Actions on GitHub",
         Action::Open(format!("https://github.com/{}/actions", view.repo)),
     ));
+    if server.is_none() {
+        items.push(builder.info("Show Logs"));
+        items.push(builder.info("Disconnect"));
+        return builder.submenu(label, items);
+    }
     items.push(builder.item("Show Logs", Action::Logs(view.repo.clone())));
     if let Some(verb) = operation {
         items.push(builder.info(format!("{verb}…")));
@@ -226,8 +236,10 @@ fn run_label_short(run: &Run, now: i64) -> String {
     }
 }
 
-/// The tray's icon state: offline, running, failed, success when every
-/// repository's latest run passed, or idle when there is nothing to report.
+/// The tray's icon state: offline when the server does not answer, attention
+/// when job results need a working GitHub token, running, failed, success
+/// when every repository's latest run passed, or idle when there is nothing
+/// to report.
 fn icon(view: &View) -> (&'static str, usize) {
     let active = view
         .repos
@@ -241,9 +253,9 @@ fn icon(view: &View) -> (&'static str, usize) {
         _ => return ("offline", active),
     };
     // Without a working token there are no results: a broken setup must not
-    // look like a quiet server.
+    // look like a quiet server, nor like one that is down.
     if view.token_error.is_some() {
-        return ("offline", 0);
+        return ("attention", 0);
     }
     let held = server.lock.as_ref().is_some_and(|lock| !lock.is_empty());
     if active > 0 || held {
@@ -328,6 +340,9 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         };
         items.push(builder.info(empty));
     }
+    if status.is_none() && !view.repos.is_empty() {
+        items.push(builder.info("Repositories as of the server's last answer"));
+    }
     for repo in &view.repos {
         let operation = view
             .operations
@@ -410,9 +425,7 @@ fn menu_settings(builder: &mut Builder, view: &View, items: &mut Vec<Value>) {
 fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u32, Action>) {
     let (icon, active) = icon(view);
     let tooltip = match icon {
-        "offline" if view.token_error.is_some() => {
-            "Runberth — job results need a working GitHub token".to_owned()
-        }
+        "attention" => "Runberth — job results need a working GitHub token".to_owned(),
         "offline" => "Runberth — server unreachable".to_owned(),
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
@@ -647,12 +660,12 @@ mod tests {
     }
 
     #[test]
-    fn a_token_problem_is_shown_at_the_top_with_the_offline_badge() {
+    fn a_token_problem_is_shown_at_the_top_with_the_attention_badge() {
         let mut broken = view(Some(Ok(status(vec![]))), vec![]);
         broken.repos[0].runs = Err(crate::github::REJECTED.into());
         broken.token_error = Some("GitHub rejected the token — replace it in Settings…".into());
         let (menu, _) = build(&broken);
-        assert_eq!(menu["icon"], "offline");
+        assert_eq!(menu["icon"], "attention");
         assert_eq!(
             menu["tooltip"],
             "Runberth — job results need a working GitHub token"
@@ -670,6 +683,39 @@ mod tests {
             vec![run(1, "completed", Some("failure"))],
         ));
         assert_eq!(menu["icon"], "failed");
+    }
+
+    #[test]
+    fn repositories_stay_listed_without_server_actions_while_it_is_unreachable() {
+        let down = view(
+            Some(Err("192.0.2.1: Connection timed out".into())),
+            vec![run(1, "completed", Some("success"))],
+        );
+        let (menu, actions) = build(&down);
+        // The server being down outranks what GitHub says.
+        assert_eq!(menu["icon"], "offline");
+        let top = labels(&menu["items"]);
+        assert_eq!(top[3], "Repositories as of the server's last answer");
+        assert!(!top.contains(&"Connect Repository".to_owned()));
+        let repo = &menu["items"][4];
+        let inside = labels(&repo["children"]);
+        assert_eq!(inside[0], "Server unreachable — runner state unknown");
+        assert!(inside.contains(&"Open Actions on GitHub".to_owned()));
+        for disabled in ["Show Logs", "Disconnect"] {
+            let item = repo["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["label"] == disabled)
+                .unwrap();
+            assert_eq!(item["enabled"], false, "{disabled}");
+            assert!(item.get("children").is_none(), "{disabled}");
+        }
+        assert!(
+            !actions
+                .values()
+                .any(|action| matches!(action, Action::Logs(_) | Action::Disconnect(_)))
+        );
     }
 
     #[test]

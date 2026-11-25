@@ -18,6 +18,8 @@ fn main() {
                 ("tray_success", "assets/tray/badge-success.png"),
                 ("tray_failed", "assets/tray/badge-failed.png"),
                 ("tray_offline", "assets/tray/badge-offline.png"),
+                ("tray_glyph_cut_attention", "assets/tray/glyph-cut-attention.png"),
+                ("tray_attention", "assets/tray/badge-attention.png"),
                 ("tray_running", "assets/tray/badge-running.png"),
             ] {
                 println!("cargo:rerun-if-changed={file}");

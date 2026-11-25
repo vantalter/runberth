@@ -96,6 +96,8 @@ static const char *icon_name(void) {
         return own ? "runberth-tray-success-symbolic" : "emblem-ok-symbolic";
     if (!g_strcmp0(icon_state, "offline"))
         return own ? "runberth-tray-offline-symbolic" : "network-offline-symbolic";
+    if (!g_strcmp0(icon_state, "attention"))
+        return own ? "runberth-tray-attention-symbolic" : "dialog-password-symbolic";
     return own ? "runberth-tray-symbolic" : "network-server-symbolic";
 }
 
