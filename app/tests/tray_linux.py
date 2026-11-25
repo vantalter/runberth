@@ -78,8 +78,13 @@ def run():
 
 class GitHub(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        check(self.headers["Authorization"] == "Bearer test-token", "the token is sent")
-        if self.path.startswith("/repos/o/r/actions/runs/7/jobs"):
+        # The stored token, or the one piped to `runberth connect` below.
+        check(self.headers["Authorization"] in ("Bearer test-token", "Bearer cli-token"), "the token is sent")
+        if self.path == "/repos/o/new/contents/.github/runberth.json":
+            body = {"type": "file", "path": ".github/runberth.json"}
+        elif self.path == "/repos/o/bare":
+            body = {"full_name": "o/bare", "default_branch": "trunk"}
+        elif self.path.startswith("/repos/o/r/actions/runs/7/jobs"):
             body = {"jobs": [{"name": "check", "status": "in_progress", "conclusion": None,
                               "runner_name": "runberth-r"}]}
         elif self.path.startswith("/repos/o/r/actions/runs"):
@@ -255,6 +260,14 @@ try:
         check(cli.returncode == 0, f"runberth connect exits 0: {cli.stderr}")
         check(connected.exists() and connected.read_text().startswith("cli-token|"),
               "runberth connect passes a piped token on stdin")
+        # Without the opt-in file, the command says so before asking the server.
+        connected.unlink()
+        bare = subprocess.run([binary, "connect", "o/bare"], input="cli-token\n", text=True, env=env,
+                              capture_output=True, timeout=20)
+        check(bare.returncode == 1 and "o/bare has no .github/runberth.json" in bare.stderr
+              and "https://github.com/o/bare/new/trunk?filename=.github/runberth.json" in bare.stderr,
+              f"a missing opt-in file is explained: {bare.stderr}")
+        check(not connected.exists(), "the server is not asked to connect it")
         usage = subprocess.run([binary, "connect"], env=env, capture_output=True, text=True, timeout=20)
         check(usage.returncode == 2 and "Usage: runberth" in usage.stderr, "a mistake prints the usage")
     app.send_signal(signal.SIGTERM)
