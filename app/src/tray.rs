@@ -21,6 +21,9 @@ enum Wake {
     /// The menu is opening: refresh unless the last refresh is recent.
     MenuOpened,
     CheckUpdates,
+    /// Something only the menu shows changed, such as the cleanup's step:
+    /// show it without asking the server or GitHub again.
+    Redraw,
     Stop,
 }
 
@@ -47,6 +50,11 @@ static LOGIN: AtomicI32 = AtomicI32::new(-1);
 static SPARKLE: AtomicBool = AtomicBool::new(false);
 /// Connections and disconnections in progress: repository and verb.
 static OPERATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// The server cleanup's latest line while it runs.
+static CLEANUP: Mutex<Option<String>> = Mutex::new(None);
+/// The server a cleanup removed Runberth from, until it answers again: its
+/// failing status then means "removed", not "unreachable".
+static REMOVED: Mutex<Option<config::Server>> = Mutex::new(None);
 /// Set when the repositories to connect should be listed again.
 static LIST_AGAIN: AtomicBool = AtomicBool::new(false);
 
@@ -162,12 +170,28 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
             native::settings_status(&status.to_string());
         }),
         "cleanup-execute" => in_background(|| {
-            let result = run_on_server(&["cleanup", "--execute", "--github-token-stdin"], true);
+            set_cleanup(Some(String::new()));
+            // Each line the server prints names its step, or apt's package.
+            let result = stream_on_server(&["cleanup", "--execute", "--github-token-stdin"], true, |line| {
+                native::settings_status(&json!({"cleanup_progress": line}).to_string());
+                set_cleanup(Some(line.to_owned()));
+            });
+            set_cleanup(None);
             let (message, ok) = match &result {
-                Ok(_) => ("Runberth is removed from the server".to_owned(), true),
+                Ok(()) => ("Runberth is removed from the server".to_owned(), true),
                 Err(error) => (error.clone(), false),
             };
-            native::settings_status(&json!({"cleanup": message, "cleanup_ok": ok}).to_string());
+            if ok {
+                let server = config::load(&config::settings_path())
+                    .ok()
+                    .and_then(|config| config.server().cloned());
+                if let Ok(mut removed) = REMOVED.lock() {
+                    *removed = server;
+                }
+            }
+            native::settings_status(
+                &json!({"cleanup": message, "cleanup_ok": ok, "cleanup_done": true}).to_string(),
+            );
             let title = if ok {
                 "Server cleaned up"
             } else {
@@ -246,6 +270,68 @@ fn run_operation(command: &str, repo: &str) -> Result<(), (String, Option<String
     run_on_server(&[command, repo], true)
         .map(drop)
         .map_err(|error| (error, None))
+}
+
+fn cleanup_step() -> Option<String> {
+    CLEANUP.lock().ok().and_then(|step| step.clone())
+}
+
+fn set_cleanup(step: Option<String>) {
+    if let Ok(mut current) = CLEANUP.lock() {
+        *current = step;
+    }
+    wake(Wake::Redraw);
+}
+
+/// Runs `runberth REMOTE...` on the server like run_on_server, passing each
+/// line it prints to `line` as it arrives, for work that takes minutes.
+fn stream_on_server(remote: &[&str], token: bool, mut line: impl FnMut(&str)) -> Result<(), String> {
+    use std::io::BufRead;
+    let config = config::load(&config::settings_path())?;
+    let server = config.server().ok_or("No server set")?;
+    let token = if token { Some(token::read(&config)?) } else { None };
+    let mut child = server::command(server, remote, false)?
+        .stdin(if token.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run ssh: {error}"))?;
+    if let (Some(token), Some(mut input)) = (token, child.stdin.take()) {
+        input
+            .write_all(format!("{token}\n").as_bytes())
+            .map_err(|error| format!("Cannot pass the token: {error}"))?;
+    }
+    // Read stderr alongside, so a chatty one cannot fill its pipe and stall
+    // the server while stdout is read.
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let errors = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+        text
+    });
+    let stdout = child.stdout.take().expect("piped stdout");
+    for text in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        let text = text.trim();
+        if !text.is_empty() {
+            line(text);
+        }
+    }
+    let status = child.wait().map_err(|error| error.to_string())?;
+    let errors = errors.join().unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else {
+        Err(server::failure(
+            server.host.trim(),
+            remote[0],
+            status.code(),
+            &errors,
+        ))
+    }
 }
 
 /// Runs `runberth REMOTE...` on the server in the settings and returns its
@@ -546,6 +632,13 @@ impl Poller {
         });
         let server = config.server().cloned();
         let result = server.as_ref().map(server::fetch);
+        let removed = REMOVED.lock().is_ok_and(|mut removed| {
+            // Answering again, as after a new install, or another server.
+            if removed.as_ref() != server.as_ref() || matches!(result, Some(Ok(_))) {
+                *removed = None;
+            }
+            removed.is_some()
+        });
         let last_status = self.remember(server.as_ref(), result.as_ref());
         if let Ok(mut summary) = SERVER_SUMMARY.lock() {
             *summary = last_status.map(report::server_summary);
@@ -644,6 +737,8 @@ impl Poller {
                 .lock()
                 .map(|operations| operations.clone())
                 .unwrap_or_default(),
+            cleanup: cleanup_step(),
+            removed,
             candidates: github
                 .is_some()
                 .then(|| self.candidates.as_ref().map(|(_, list)| list.clone()))
@@ -696,6 +791,11 @@ fn poll(receiver: Receiver<Wake>) {
                     });
                     break;
                 }
+                Ok(Wake::Redraw) => publish(&View {
+                    cleanup: cleanup_step(),
+                    now: runs::now(),
+                    ..view.clone()
+                }),
                 Ok(Wake::Stop) | Err(RecvTimeoutError::Disconnected) => return,
             }
         }

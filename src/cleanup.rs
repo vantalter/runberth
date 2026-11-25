@@ -268,6 +268,7 @@ pub fn delete_github_runner(api: &dyn Api, repo: &str, id: u64) -> Result<()> {
 
 fn remove_swap(swap: &Option<SwapEntry>) -> Result<()> {
     let Some(swap) = swap else { return Ok(()) };
+    println!("Removing the swap file");
     if swap.path != paths::SWAP_FILE || system::is_symlink(Path::new(&swap.path)) {
         bail!("Unexpected managed path: {}", swap.path);
     }
@@ -340,6 +341,10 @@ fn remove_packages(recorded: &[String]) -> Result<()> {
     if !untracked.is_empty() {
         bail!("apt would remove untracked packages: {untracked:?}");
     }
+    println!(
+        "Removing {} apt packages; this can take a few minutes",
+        installed.len()
+    );
     let mut purge = vec!["purge", "-y", "--"];
     purge.extend(&installed);
     system::run("apt-get", &purge)
@@ -458,7 +463,10 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
 
     // The dock holds broker sessions and starts runners: stop and remove it
     // before anything else.
+    // Each step says what it does before it starts: the desktop app shows
+    // these lines while a cleanup of several minutes runs.
     if crate::dock::on_demand() {
+        println!("Stopping the on-demand dock");
         system::run("systemctl", &["disable", "--now", crate::dock::DOCK_UNIT])?;
         system::remove_file_if_present(&crate::dock::unit_path())?;
         system::run("systemctl", &["daemon-reload"])?;
@@ -466,6 +474,9 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
 
     // Stop all jobs before removing registrations and files. Never execute a
     // user-writable svc.sh as root; use the verified systemd unit names.
+    if !inventory.runners.is_empty() {
+        println!("Stopping the runners");
+    }
     for unit in inventory
         .runners
         .iter()
@@ -503,6 +514,9 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
     if !inventory.runners.is_empty() {
         system::run("systemctl", &["daemon-reload"])?;
     }
+    if !inventory.runners.is_empty() {
+        println!("Removing the runners' accounts and caches");
+    }
     for runner in &inventory.runners {
         remove_account(&runner.entry)?;
     }
@@ -515,6 +529,7 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
         None => {}
     }
     let shared = has_shared_marker(&inventory.root)?;
+    println!("Removing Runberth's files");
     if shared {
         system::remove_tree(Path::new(paths::OPT))?;
         system::remove_tree(Path::new(paths::STATE_ROOT))?;
