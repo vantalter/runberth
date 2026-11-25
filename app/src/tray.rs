@@ -152,6 +152,7 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
             token_status(result.map(|()| "Token stored"))
         }),
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
+        "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
         "cleanup-preview" => in_background(|| {
             let status = match run_on_server(&["cleanup"], false) {
@@ -395,16 +396,45 @@ fn in_background(work: impl FnOnce() + Send + 'static) {
     std::thread::spawn(work);
 }
 
+/// After saving or removing the token: the failure, or the token's new state.
 fn token_status(result: Result<&str, String>) {
-    let message = match &result {
-        Ok(message) => (*message).to_owned(),
-        Err(error) => error.clone(),
+    let status = match result {
+        Ok(_) => token_check(),
+        Err(error) => json!({"token_stored": token::is_stored(), "token_state": error, "token_ok": false}),
     };
-    native::settings_status(
-        &json!({"token_stored": token::is_stored(), "token_message": message, "token_ok": result.is_ok()})
-            .to_string(),
-    );
+    native::settings_status(&status.to_string());
     wake(Wake::Refresh);
+}
+
+/// Whether a token is stored, and whether GitHub takes the one the app
+/// reads, with its account: the GitHub tab's status line.
+fn token_check() -> serde_json::Value {
+    let config = config::load(&config::settings_path())
+        .unwrap_or_else(|_| config::Config::parse("{}").expect("empty settings parse"));
+    let stored = token::is_stored();
+    let source = if config.github_token_command.is_some() {
+        "From the token command"
+    } else if stored {
+        "Stored in your keychain"
+    } else {
+        return json!({"token_stored": false, "token_state": "No token stored", "token_ok": true});
+    };
+    let (state, ok) = match token::read(&config).and_then(|token| github::GitHub::new(token).login()) {
+        Ok(login) => (format!("{source} · GitHub account {login}"), true),
+        Err(error) if error == github::REJECTED => {
+            let which = if config.github_token_command.is_some() {
+                "the command's"
+            } else {
+                "the stored"
+            };
+            (
+                format!("GitHub rejects {which} token — it may have expired"),
+                false,
+            )
+        }
+        Err(error) => (format!("{source} · {error}"), false),
+    };
+    json!({"token_stored": stored, "token_state": state, "token_ok": ok})
 }
 
 /// Asks the server for its status with the saved settings.
@@ -510,8 +540,7 @@ impl Poller {
             *summary = last_status.map(report::server_summary);
         }
         let runners = last_status.and_then(|status| status.runners.clone());
-        if last_status.is_some_and(|status| status.runners.is_none())
-        {
+        if last_status.is_some_and(|status| status.runners.is_none()) {
             errors.push("The server account cannot list repositories; reinstall with --sudoers".into());
         }
         let runners = runners.unwrap_or_default();
@@ -739,15 +768,23 @@ mod tests {
 
     fn server(host: &str) -> config::Server {
         let settings = format!(r#"{{"server": {{"host": "{host}"}}}}"#);
-        config::Config::parse(&settings).unwrap().server().unwrap().clone()
+        config::Config::parse(&settings)
+            .unwrap()
+            .server()
+            .unwrap()
+            .clone()
     }
 
     #[test]
     fn the_last_answer_belongs_to_its_server() {
-        let status = server::Status::parse(r#"{"format": 1, "version": "0.2.0", "mode": "on-demand"}"#).unwrap();
+        let status =
+            server::Status::parse(r#"{"format": 1, "version": "0.2.0", "mode": "on-demand"}"#).unwrap();
         let (first, second) = (server("192.0.2.1"), server("192.0.2.2"));
         let mut poller = poller();
-        assert_eq!(poller.remember(Some(&first), Some(&Ok(status.clone()))), Some(&status));
+        assert_eq!(
+            poller.remember(Some(&first), Some(&Ok(status.clone()))),
+            Some(&status)
+        );
         // Unreachable: the repositories stay listed from the last answer.
         let timeout = Err("Connection timed out".to_owned());
         assert_eq!(poller.remember(Some(&first), Some(&timeout)), Some(&status));

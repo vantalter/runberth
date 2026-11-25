@@ -230,7 +230,12 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *lastChecked;
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
-@property NSTextField *testStatus, *tokenState, *tokenMessage, *loginNote, *version, *settingsPath;
+@property NSTextField *testStatus, *tokenState, *loginNote, *version, *settingsPath;
+/* Enabled only when there is a token to save, or a stored one to remove. */
+@property NSButton *saveTokenButton, *removeTokenButton;
+/* A typed token is on its way to the keychain: once it is stored, the field
+ * shows dots again; if storing fails, it keeps what was typed. */
+@property BOOL savingToken;
 @property NSTextField *cleanupStatus;
 /* Whether macOS lets the app show notifications. */
 @property NSTextField *notificationsStatus;
@@ -339,12 +344,20 @@ static NSColor *closeButtonRed(void) {
     section.alignment = NSLayoutAttributeTop;
     return section;
 }
+/* Stands in for a stored token in the token field, which shows it as dots;
+ * a GitHub token never contains "•", so typing or pasting replaces it. */
+static NSString *const StoredTokenMask = @"••••••••••••••••••••";
+
 - (NSView *)github {
-    self.tokenState = [NSTextField labelWithString:@""];
     self.token = [[NSSecureTextField alloc] init];
     self.token.placeholderString = @"github_pat_… or ghp_…";
+    self.token.delegate = self;
     [self.token.widthAnchor constraintEqualToConstant:260].active = YES;
-    self.tokenMessage = statusLine(300);
+    self.tokenState = statusLine(300);
+    self.saveTokenButton = pushButton(@"Save", self, @selector(saveToken:));
+    self.saveTokenButton.enabled = NO;
+    self.removeTokenButton = pushButton(@"Remove Token", self, @selector(removeToken:));
+    self.removeTokenButton.enabled = NO;
     NSTextField *tokenNote = noteLabel();
     tokenNote.stringValue = @"Showing runs needs Actions: Read. Connecting and disconnecting repositories "
                             @"also needs Administration: Read and write, and Contents: Read. A classic "
@@ -354,12 +367,8 @@ static NSColor *closeButtonRed(void) {
     commandNote.stringValue = @"Optional. When set, the app runs this command for the token instead of "
                               @"reading the keychain.";
     return form(@[
-        @[ @"Token:", self.tokenState ],
-        @[ @"New token:", column(@[ row(@[ self.token, pushButton(@"Save", self, @selector(saveToken:)) ]),
-                                    tokenNote ]) ],
-        @[ @"", column(@[ row(@[ pushButton(@"Create a Token…", self, @selector(createToken:)),
-                                 pushButton(@"Remove Token", self, @selector(removeToken:)) ]),
-                          self.tokenMessage ]) ],
+        @[ @"Token:", column(@[ row(@[ self.token, self.saveTokenButton ]), self.tokenState, tokenNote ]) ],
+        @[ @"", row(@[ pushButton(@"Create a Token…", self, @selector(createToken:)), self.removeTokenButton ]) ],
         NSNull.null,
         @[ @"Token command:", column(@[ self.tokenCommand, commandNote ]) ],
     ]);
@@ -638,6 +647,8 @@ static NSString *shellQuoted(NSString *path) {
             openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.notifications"]];
 }
 - (void)windowDidBecomeKey:(NSNotification *)notification {
+    // The keychain or GitHub may have changed while the window was away.
+    emit(@"token-check", @"");
     [self refreshNotificationPermission];
     [self refreshCommandLineTool];
     [self refreshUpdates];
@@ -678,9 +689,8 @@ static NSString *shellQuoted(NSString *path) {
             if ([item.representedObject isEqual:fields[@"notifications"]])
                 [self.notifications selectItem:item];
         self.updatesBox.state = [fields[@"check_updates"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-        self.token.stringValue = @"";
         setStatus(self.testStatus, @"", YES);
-        setStatus(self.tokenMessage, @"", YES);
+        setStatus(self.tokenState, @"Checking the token…", YES);
         self.version.stringValue = [NSString stringWithFormat:@"%@", state[@"version"]];
         // With the home folder as ~, as people write it.
         self.settingsPath.stringValue = [state[@"path"] ?: @"" stringByAbbreviatingWithTildeInPath];
@@ -689,6 +699,7 @@ static NSString *shellQuoted(NSString *path) {
     [self refreshCommandLineTool];
     [self refreshUpdates];
     [self status:state];
+    emit(@"token-check", @"");
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:nil];
     // Since macOS 14 an app cannot always activate itself; show the window anyway.
@@ -793,14 +804,14 @@ static NSString *shellQuoted(NSString *path) {
         setStatus(self.cleanupStatus, state[@"cleanup"], [state[@"cleanup_ok"] boolValue]);
         self.cleanupButton.enabled = YES;
     }
-    if (state[@"token_stored"])
-        self.tokenState.stringValue = [state[@"token_stored"] boolValue] ? @"Stored in your keychain"
-                                                                         : @"No token stored";
-    if (state[@"token_message"]) {
-        setStatus(self.tokenMessage, state[@"token_message"], [state[@"token_ok"] boolValue]);
-        if ([state[@"token_ok"] boolValue])
+    if (state[@"token_stored"]) {
+        if (self.savingToken && [state[@"token_stored"] boolValue] && [state[@"token_ok"] boolValue])
             self.token.stringValue = @"";
+        self.savingToken = NO;
+        [self showStoredToken:[state[@"token_stored"] boolValue]];
     }
+    if (state[@"token_state"])
+        setStatus(self.tokenState, state[@"token_state"], [state[@"token_ok"] boolValue]);
     if (state[@"login"]) {
         int login = [state[@"login"] intValue];
         self.loginBox.enabled = login >= 0;
@@ -836,6 +847,19 @@ static NSString *shellQuoted(NSString *path) {
         [self armConfirmButton:[self.confirmField.stringValue isEqualToString:self.confirmField.toolTip]];
         return;
     }
+    if (notification.object == self.token) {
+        // Typing over the stored token's dots starts a new token.
+        NSString *typed = [self.token.stringValue stringByReplacingOccurrencesOfString:@"•" withString:@""];
+        if (![typed isEqualToString:self.token.stringValue]) {
+            NSText *editor = self.token.currentEditor;
+            if (editor)
+                editor.string = typed;
+            else
+                self.token.stringValue = typed;
+        }
+        self.saveTokenButton.enabled = typed.length > 0;
+        return;
+    }
     [self.saveTimer invalidate];
     self.saveTimer = [NSTimer scheduledTimerWithTimeInterval:0.6
                                                      repeats:NO
@@ -866,10 +890,34 @@ static NSString *shellQuoted(NSString *path) {
                   }];
 }
 - (void)saveToken:(id)sender {
-    if (self.token.stringValue.length)
-        emit(@"token-save", self.token.stringValue);
+    NSString *token = self.token.stringValue;
+    if (!token.length || [token containsString:@"•"])
+        return;
+    self.saveTokenButton.enabled = NO;
+    self.savingToken = YES;
+    setStatus(self.tokenState, @"Saving and checking the token…", YES);
+    emit(@"token-save", token);
+}
+/* Dots in the token field while a token is stored, unless a new one is
+ * being typed, and Remove only when there is something to remove. */
+- (void)showStoredToken:(BOOL)stored {
+    NSString *value = self.token.stringValue;
+    BOOL typing = value.length && ![value isEqualToString:StoredTokenMask];
+    if (!typing) {
+        if (self.token.currentEditor)
+            [self.window makeFirstResponder:nil];
+        self.token.stringValue = stored ? StoredTokenMask : @"";
+    }
+    self.saveTokenButton.enabled = typing;
+    self.removeTokenButton.enabled = stored;
+}
+/* Leaving the field empty keeps the stored token, so its dots come back. */
+- (void)controlTextDidEndEditing:(NSNotification *)notification {
+    if (notification.object == self.token && !self.token.stringValue.length && self.removeTokenButton.enabled)
+        self.token.stringValue = StoredTokenMask;
 }
 - (void)removeToken:(id)sender {
+    self.removeTokenButton.enabled = NO;
     emit(@"token-remove", @"");
 }
 - (void)createToken:(id)sender {
