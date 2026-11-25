@@ -22,7 +22,17 @@ The current target is **Ubuntu 24.04 or 26.04, x64 or arm64, with systemd and cg
 
 ### 1. Set up the host
 
-Clone Runberth, then write your host config. Copy [config/host.json](config/host.json) to a file of your own, such as `~/runberth-host.json`, and set:
+The quickest way is the `runberth` command for your computer, on macOS or Linux. Install it, point it at the VPS, and set the server up, all without a checkout:
+
+```sh
+curl -fsSL https://github.com/vantalter/runberth/releases/latest/download/install.sh | sh
+runberth config --host 203.0.113.10 --user ubuntu --key ~/.ssh/vps_ed25519
+runberth install --owner YOUR_GITHUB_ACCOUNT --swap 3
+```
+
+The installer picks the build for your system, checks its SHA-256, and installs it into `/usr/local/bin`. `runberth install` downloads the matching server release for the VPS's processor and runs the steps below; see the [command's guide](docs/desktop-app.md#the-runberth-command). The [desktop app](docs/desktop-app.md) includes the same command.
+
+From a checkout instead, clone Runberth, then write your host config. Copy [config/host.json](config/host.json) to a file of your own, such as `~/runberth-host.json`, and set:
 
 - `owner`: your personal GitHub account, which owns the private repositories you will connect;
 - `runberth`: a name for this installation, `YOUR_ACCOUNT/runberth`, which each repository's opt-in file repeats; it does not need to be a real repository;

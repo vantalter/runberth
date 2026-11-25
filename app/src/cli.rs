@@ -5,7 +5,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, install, server, token};
+use crate::{config, install, server, settings, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
@@ -20,6 +20,7 @@ Runs Runberth commands on the server named in the desktop app's settings.
   cleanup [--execute [--github-removed]]
                                 show, then with --execute remove, everything
                                 Runberth installed on the server
+  config [OPTIONS]              show or change the settings; see config --help
   install [OPTIONS]             set up Runberth on the server; see install --help
   update                        install this app's version on the server
   --version                     this app's version
@@ -43,7 +44,98 @@ fn repository(argument: &str) -> bool {
 enum Parsed<'a> {
     Run(Vec<&'a str>, bool),
     Install(install::Options),
+    Config(Vec<&'a str>),
     Print(String, i32),
+}
+
+const CONFIG_USAGE: &str = "Usage: runberth config [OPTIONS]
+
+Without options, shows the settings the app and this command share, and
+where they are kept. With options, changes them:
+
+  --host HOST               the server's address; localhost runs Runberth on
+                            this computer, without SSH
+  --user NAME               the SSH account (default: ubuntu)
+  --port PORT               the SSH port (default: 22)
+  --key PATH                the SSH private key; \"\" uses the agent and ~/.ssh/config
+  --token-command COMMAND   a command that prints the GitHub token; \"\" removes it
+  --interval SECONDS        how often the app refreshes (5 to 3600)
+  --notifications all|failures|off
+                            which finished runs the app announces
+  --token-stdin             store the GitHub token read from stdin, as in
+                            `gh auth token | runberth config --token-stdin`,
+                            in the macOS Keychain or the Secret Service
+  --remove-token            remove the stored GitHub token";
+
+/// Shows the settings, or applies the options as the Settings window would.
+fn configure(options: &[&str]) -> Result<(), String> {
+    let path = config::settings_path();
+    let current = config::load(&path)?;
+    if options.is_empty() {
+        let fields = settings::fields(&current);
+        println!("Settings: {}", path.display());
+        for (label, name) in [
+            ("host", "host"),
+            ("user", "user"),
+            ("port", "port"),
+            ("key", "key"),
+            ("token command", "token_command"),
+            ("interval", "interval"),
+            ("notifications", "notifications"),
+        ] {
+            let value = fields[name].as_str().unwrap_or_default();
+            println!("  {label:<14} {}", if value.is_empty() { "-" } else { value });
+        }
+        let stored = if token::is_stored() { "stored" } else { "none" };
+        println!("  {:<14} {stored}", "GitHub token");
+        return Ok(());
+    }
+    let mut form = settings::fields(&current);
+    let mut changed = false;
+    let mut rest = options;
+    while let [option, tail @ ..] = rest {
+        let field = match *option {
+            "--token-stdin" => {
+                let mut line = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|error| error.to_string())?;
+                token::store(line.trim())?;
+                println!("GitHub token stored");
+                rest = tail;
+                continue;
+            }
+            "--remove-token" => {
+                token::remove()?;
+                println!("GitHub token removed");
+                rest = tail;
+                continue;
+            }
+            "--host" => "host",
+            "--user" => "user",
+            "--port" => "port",
+            "--key" => "key",
+            "--token-command" => "token_command",
+            "--interval" => "interval",
+            "--notifications" => "notifications",
+            other => return Err(format!("unknown option: {other}\n\n{CONFIG_USAGE}")),
+        };
+        let [value, tail @ ..] = tail else {
+            return Err(format!("{option} needs a value"));
+        };
+        if field == "notifications" && !matches!(*value, "all" | "failures" | "off") {
+            return Err("--notifications must be all, failures, or off".into());
+        }
+        form[field] = serde_json::json!(value);
+        changed = true;
+        rest = tail;
+    }
+    if changed {
+        settings::apply(&path, &form)?;
+        println!("Saved {}", path.display());
+    }
+    Ok(())
 }
 
 fn parse(args: &[String]) -> Option<Parsed<'_>> {
@@ -70,12 +162,20 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
             true,
         )),
         ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
+        ["config", "--help" | "-h"] => Some(Parsed::Print(CONFIG_USAGE.to_owned(), 0)),
+        ["config", options @ ..] => Some(Parsed::Config(options.to_vec())),
         ["install" | "update", ..] => match install::parse(&args) {
             Ok(options) => Some(Parsed::Install(options)),
             Err(error) => Some(Parsed::Print(error, 2)),
         },
         _ => usage(2),
     }
+}
+
+/// Prints the usage to stderr, for a command line without a command.
+pub fn usage(code: i32) -> i32 {
+    eprintln!("{USAGE}");
+    code
 }
 
 /// Runs a command line, or returns None when the arguments are for the app.
@@ -89,6 +189,13 @@ pub fn run(args: &[String]) -> Option<i32> {
             eprintln!("{text}");
             Some(code)
         }
+        Parsed::Config(options) => Some(configure(&options).map_or_else(
+            |error| {
+                eprintln!("runberth: {error}");
+                1
+            },
+            |()| 0,
+        )),
         Parsed::Install(options) => Some(install::run(&options).map_or_else(
             |error| {
                 eprintln!("runberth: {error}");
@@ -160,6 +267,7 @@ mod tests {
             Some(Parsed::Install(options)) => {
                 Some((vec![format!("install update={}", options.update)], false))
             }
+            Some(Parsed::Config(options)) => Some((vec![format!("config {}", options.join(" "))], false)),
             None => None,
         }
     }
@@ -175,6 +283,8 @@ mod tests {
         assert!(!parsed("status --watch 5").unwrap().1);
         assert!(!parsed("logs o/r --follow").unwrap().1);
         assert_eq!(parsed("update").unwrap().0, ["install update=true"]);
+        assert_eq!(parsed("config --host h").unwrap().0, ["config --host h"]);
+        assert_eq!(parsed("config --help").unwrap().0, ["print 0"]);
         assert_eq!(parsed("cleanup").unwrap(), (vec!["cleanup".into()], false));
         assert_eq!(
             parsed("cleanup --execute").unwrap(),

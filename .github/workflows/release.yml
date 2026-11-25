@@ -77,17 +77,25 @@ jobs:
       - name: Test
         run: cargo test --locked
       - name: Build
-        run: cargo build --release --locked --target "$TARGET"
+        run: |
+          cargo build --release --locked --target "$TARGET"
+          # The `runberth` command for this computer, without the tray app.
+          cargo build -p runberth-app --no-default-features --release --locked --target "$TARGET"
       - name: Package
         run: |
           cp "target/$TARGET/release/runberth" "$ASSET"
-          "./$ASSET" --version
-          sha256sum "$ASSET" > "$ASSET.sha256"
-          cat "$ASSET.sha256"
+          cp "target/$TARGET/release/runberth-app" "runberth-cli-$TARGET"
+          for file in "$ASSET" "runberth-cli-$TARGET"; do
+            "./$file" --version
+            sha256sum "$file" > "$file.sha256"
+            cat "$file.sha256"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: release-server-${{ matrix.target }}
-          path: runberth-${{ matrix.target }}*
+          path: |
+            runberth-${{ matrix.target }}*
+            runberth-cli-${{ matrix.target }}*
 
   macos:
     needs: version
@@ -151,6 +159,21 @@ jobs:
         run: |
           app/scripts/package-macos.sh "Runberth-${{ needs.version.outputs.version }}-macos-universal"
           app/scripts/check-macos-app.sh
+      - name: Command-line tool
+        run: |
+          # The `runberth` command without the app, for both processors.
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build -p runberth-app --no-default-features --release --locked --target "$target"
+          done
+          lipo -create -output runberth-cli-macos-universal \
+            target/aarch64-apple-darwin/release/runberth-app target/x86_64-apple-darwin/release/runberth-app
+          # Signed like the app when a Developer ID is set; curl downloads
+          # are not quarantined, so it needs no notarization.
+          if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+            codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp runberth-cli-macos-universal
+          fi
+          ./runberth-cli-macos-universal --version
+          shasum -a 256 runberth-cli-macos-universal > runberth-cli-macos-universal.sha256
       - name: Update feed
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -174,6 +197,7 @@ jobs:
             Runberth-*.zip
             Runberth-*.dmg
             appcast.xml
+            runberth-cli-macos-universal*
 
   linux:
     needs: version
@@ -225,11 +249,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release-files
           merge-multiple: true
+      # The one-line installer for the command-line tool.
+      - run: cp scripts/install-cli.sh release-files/install.sh
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

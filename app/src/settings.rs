@@ -50,6 +50,19 @@ pub fn apply(path: &Path, form: &Value) -> Result<(), String> {
     if user.is_empty() {
         return Err("Enter the SSH user, such as ubuntu".into());
     }
+    // Both reach ssh's command line, where a leading "-" would be an option.
+    let plain = |value: &str, extra: &str| {
+        !value.starts_with('-')
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+    };
+    if !plain(user, "._-") {
+        return Err("The SSH user must be a plain account name, such as ubuntu".into());
+    }
+    if !plain(text(form, "host"), ".:-") {
+        return Err("The host must be an IP address or a host name".into());
+    }
     let notifications = match text(form, "notifications") {
         id @ ("all" | "failures" | "off") => id,
         _ => "all",
@@ -150,6 +163,12 @@ mod tests {
         bad = form();
         bad["user"] = json!(" ");
         assert!(apply(&path, &bad).unwrap_err().contains("SSH user"));
+        bad = form();
+        bad["host"] = json!("-oProxyCommand=sh");
+        assert!(apply(&path, &bad).unwrap_err().contains("host name"));
+        bad = form();
+        bad["user"] = json!("root;id");
+        assert!(apply(&path, &bad).unwrap_err().contains("account name"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
         fs::write(&path, "{ broken").unwrap();
         assert!(apply(&path, &form()).unwrap_err().contains("not valid JSON"));

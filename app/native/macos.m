@@ -224,6 +224,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *cleanupStatus;
 /* Whether macOS lets the app show notifications. */
 @property NSTextField *notificationsStatus;
+/* Whether `runberth` in /usr/local/bin is this app's command. */
+@property NSTextField *commandLineStatus;
 @property NSButton *cleanupButton;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
@@ -371,6 +373,7 @@ static NSColor *closeButtonRed(void) {
         @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
         @[ @"Notifications:", column(@[ self.notifications, [self notificationPermission] ]) ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
+        @[ @"Command line:", [self commandLineTool] ],
         NSNull.null,
         @[ @"Settings file:", column(@[ self.settingsPath, pushButton(@"Open settings.json", self, @selector(openFile:)) ]) ],
     ]);
@@ -511,6 +514,59 @@ static NSColor *closeButtonRed(void) {
           });
         }];
 }
+/* The `runberth` command: this app's binary, linked into /usr/local/bin. */
+static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
+
+- (NSView *)commandLineTool {
+    self.commandLineStatus = statusLine(220);
+    NSStackView *line = row(@[ self.commandLineStatus,
+                               pushButton(@"Install Command Line Tool…", self, @selector(installCommandLineTool:)) ]);
+    line.alignment = NSLayoutAttributeCenterY;
+    return line;
+}
+- (void)refreshCommandLineTool {
+    NSString *executable = NSBundle.mainBundle.executablePath;
+    NSString *target = [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL];
+    if ([target isEqualToString:executable])
+        setStatus(self.commandLineStatus, @"Installed as /usr/local/bin/runberth", YES);
+    else if (target || [NSFileManager.defaultManager fileExistsAtPath:CommandLinePath])
+        setStatus(self.commandLineStatus, @"Another runberth is in /usr/local/bin; installing replaces it", YES);
+    else
+        setStatus(self.commandLineStatus, @"Not installed", YES);
+}
+- (void)installCommandLineTool:(id)sender {
+    NSString *executable = NSBundle.mainBundle.executablePath;
+    NSFileManager *files = NSFileManager.defaultManager;
+    BOOL writable = [files isWritableFileAtPath:@"/usr/local/bin"];
+    NSDictionary *existing = [files attributesOfItemAtPath:CommandLinePath error:NULL];
+    BOOL replaceable = !existing || [existing[NSFileType] isEqualToString:NSFileTypeSymbolicLink];
+    NSError *error = nil;
+    if (writable && replaceable) {
+        [files removeItemAtPath:CommandLinePath error:NULL];
+        if (![files createSymbolicLinkAtPath:CommandLinePath withDestinationPath:executable error:&error])
+            setStatus(self.commandLineStatus, error.localizedDescription, NO);
+    } else {
+        // macOS asks for an administrator's password for /usr/local/bin.
+        NSString *(^quoted)(NSString *) = ^NSString *(NSString *value) {
+          NSString *escaped = [[value stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+              stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+          return [NSString stringWithFormat:@"quoted form of \"%@\"", escaped];
+        };
+        NSString *source = [NSString
+            stringWithFormat:@"do shell script \"mkdir -p /usr/local/bin && ln -sf \" & %@ & \" \" & %@ "
+                             @"with administrator privileges",
+                             quoted(executable), quoted(CommandLinePath)];
+        NSDictionary *failure = nil;
+        [[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&failure];
+        // Cancelling the password prompt is not an error worth showing.
+        if (failure && [failure[NSAppleScriptErrorNumber] integerValue] != -128)
+            setStatus(self.commandLineStatus, failure[NSAppleScriptErrorMessage] ?: @"Cannot install", NO);
+        if (failure)
+            return;
+    }
+    if (!error)
+        [self refreshCommandLineTool];
+}
 - (void)openNotificationSettings:(id)sender {
     NSString *page = [@"x-apple.systempreferences:com.apple.Notifications-Settings.extension?id="
         stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
@@ -520,6 +576,7 @@ static NSColor *closeButtonRed(void) {
 }
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     [self refreshNotificationPermission];
+    [self refreshCommandLineTool];
     [self refreshUpdates];
 }
 - (void)chooseInterval:(NSPopUpButton *)sender {
@@ -566,6 +623,7 @@ static NSColor *closeButtonRed(void) {
         self.settingsPath.stringValue = [state[@"path"] ?: @"" stringByAbbreviatingWithTildeInPath];
     }
     [self refreshNotificationPermission];
+    [self refreshCommandLineTool];
     [self refreshUpdates];
     [self status:state];
     [NSApp activateIgnoringOtherApps:YES];

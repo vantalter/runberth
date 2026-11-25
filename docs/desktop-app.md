@@ -80,7 +80,23 @@ Set `host`, `user`, `port`, and `key` as for `scripts/install-vps.sh`; without `
 
 ## The runberth command
 
-The app's binary is also a `runberth` command for your computer. It runs Runberth's commands on the server in the app's settings, over SSH or directly for localhost:
+The `runberth` command runs Runberth's commands on the server in the app's settings, over SSH or directly for localhost. It comes with the app, and also on its own, without the tray app, for macOS and Linux on x86_64 or arm64:
+
+```sh
+curl -fsSL https://github.com/vantalter/runberth/releases/latest/download/install.sh | sh
+```
+
+The installer picks the build for your system, checks its SHA-256, and installs it as `/usr/local/bin/runberth`, using sudo only when that folder is not writable; set `RUNBERTH_INSTALL_DIR` for another folder, or `RUNBERTH_VERSION=v0.2.0` for a release other than the latest. In the macOS app, **Install Command Line Tool…** in Settings > General links the app's own binary there instead, and the Linux packages install it as `/usr/bin/runberth`.
+
+Without the app, `runberth config` writes the settings the app would use, and shows them when run alone:
+
+```sh
+runberth config --host 203.0.113.10 --user ubuntu --key ~/.ssh/vps_ed25519
+gh auth token | runberth config --token-stdin
+runberth config
+```
+
+Then:
 
 ```sh
 runberth connect OWNER/REPO
@@ -97,13 +113,6 @@ runberth cleanup
 `runberth cleanup` shows what the [cleanup](cleanup.md) would remove from the server; `runberth cleanup --execute` removes it, deleting each runner's GitHub registration with the piped or stored token. In the macOS app, **Clean Up Server…** in Settings > Server shows the same plan and removes everything only after you choose **Remove Everything**. Change the repositories' `runs-on` first.
 
 `connect` and `disconnect` read a GitHub token from stdin when one is piped, as in `gh auth token | runberth connect OWNER/REPO`, and otherwise use the token stored for the app. Run `runberth --help` for the options.
-
-The Linux packages install it as `/usr/bin/runberth`. On macOS, link it from the app once:
-
-```sh
-sudo mkdir -p /usr/local/bin
-sudo ln -sf /Applications/Runberth.app/Contents/MacOS/runberth /usr/local/bin/runberth
-```
 
 ## Troubleshooting
 

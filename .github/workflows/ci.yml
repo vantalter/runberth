@@ -47,6 +47,10 @@ jobs:
         run: cargo clippy -p runberth-app --locked --all-targets -- -D warnings
       - name: Test
         run: cargo test -p runberth-app --locked
+      - name: Command-line tool without the tray
+        run: |
+          cargo clippy -p runberth-app --no-default-features --locked --all-targets -- -D warnings
+          cargo test -p runberth-app --no-default-features --locked
       - name: Tray, menu, and notifications
         run: |
           cargo build -p runberth-app --locked

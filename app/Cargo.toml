@@ -18,6 +18,13 @@ name = "runberth_app"
 name = "runberth-app"
 path = "src/main.rs"
 
+[features]
+default = ["tray"]
+# The menu bar and tray app, with its native code. Without it, the build is
+# the `runberth` command alone, with no native dependencies:
+#   cargo build -p runberth-app --no-default-features
+tray = []
+
 [dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

@@ -1,5 +1,9 @@
 fn main() {
     println!("cargo:rerun-if-changed=native");
+    // The CLI-only build has no native code.
+    if std::env::var_os("CARGO_FEATURE_TRAY").is_none() {
+        return;
+    }
     let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let mut build = cc::Build::new();
     build.include("native").warnings(true);
