@@ -18,7 +18,8 @@ then run `runberth connect OWNER/REPO`.
   --force               replace a different .github/runberth.json without
                         asking; in a terminal, init asks first
   --runberth NAME       the host config's runberth, as in OWNER/runberth,
-                        with --label, instead of asking the server
+                        with --label, for a server that does not report it;
+                        a server that does must have the same values
   --label LABEL         the host config's runner_label";
 
 const MANIFEST: &str = ".github/runberth.json";
@@ -105,22 +106,18 @@ fn git(folder: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The values to write, and the server's processor for the runs-on hint.
+#[derive(Debug)]
 struct Values {
     runberth: String,
     label: String,
     owner: Option<String>,
     arch: Option<String>,
+    /// Why the options could not be checked against the server.
+    unchecked: Option<String>,
 }
 
-fn values(options: &Options) -> Result<Values, String> {
-    if let (Some(runberth), Some(label)) = (&options.runberth, &options.label) {
-        return Ok(Values {
-            runberth: runberth.clone(),
-            label: label.clone(),
-            owner: None,
-            arch: None,
-        });
-    }
+/// The status of the server in the settings.
+fn server_status() -> Result<server::Status, String> {
     let path = config::settings_path();
     let config = config::load(&path)?;
     let server = config.server().ok_or_else(|| {
@@ -129,20 +126,59 @@ fn values(options: &Options) -> Result<Values, String> {
             path.display()
         )
     })?;
-    let status = server::fetch(server)?;
-    let host = status.host.ok_or_else(|| {
-        format!(
-            "The server's Runberth {} does not report its host config: update it with runberth update, \
-             or pass --runberth and --label",
-            status.version
-        )
-    })?;
-    Ok(Values {
-        runberth: host.runberth,
-        label: host.runner_label,
-        owner: Some(host.owner),
-        arch: status.arch,
-    })
+    server::fetch(server)
+}
+
+/// The values to write: the server's, which --runberth and --label may only
+/// repeat; the options alone only when the server cannot say, as before
+/// it reported its host config or while it is unreachable.
+fn values(options: &Options, status: Result<server::Status, String>) -> Result<Values, String> {
+    let given = options.runberth.as_ref().zip(options.label.as_ref());
+    let (host, arch, version) = match status {
+        Ok(status) => (status.host, status.arch, Ok(status.version)),
+        Err(error) => (None, None, Err(error)),
+    };
+    match (host, given) {
+        (Some(host), given) => {
+            if let Some((runberth, label)) = given {
+                for (option, value, field, expected) in [
+                    ("--runberth", runberth, "runberth", &host.runberth),
+                    ("--label", label, "runner_label", &host.runner_label),
+                ] {
+                    if value != expected {
+                        return Err(format!(
+                            "{option} {value} does not match the server's {field} {expected}, so connect would \
+                             refuse the repository; leave the option out to use the server's values"
+                        ));
+                    }
+                }
+            }
+            Ok(Values {
+                runberth: host.runberth,
+                label: host.runner_label,
+                owner: Some(host.owner),
+                arch,
+                unchecked: None,
+            })
+        }
+        (None, Some((runberth, label))) => Ok(Values {
+            runberth: runberth.clone(),
+            label: label.clone(),
+            owner: None,
+            arch,
+            unchecked: Some(match &version {
+                Ok(version) => format!("the server's Runberth {version} does not report its host config"),
+                Err(error) => error.clone(),
+            }),
+        }),
+        (None, None) => Err(match version {
+            Ok(version) => format!(
+                "The server's Runberth {version} does not report its host config: update it with runberth update, \
+                 or pass --runberth and --label"
+            ),
+            Err(error) => format!("{error}; or pass --runberth and --label"),
+        }),
+    }
 }
 
 /// How an existing file differs from the one to write, one line per value;
@@ -241,7 +277,10 @@ fn owner_warning(repo: Option<&str>, owner: Option<&str>) -> Option<String> {
 }
 
 pub fn run(options: &Options) -> Result<(), String> {
-    let values = values(options)?;
+    let values = values(options, server_status())?;
+    if let Some(reason) = &values.unchecked {
+        eprintln!("Note: --runberth and --label are not checked against the server: {reason}");
+    }
     let text = manifest(&values.runberth, &values.label);
     if options.print {
         print!("{text}");
@@ -314,6 +353,69 @@ mod tests {
         assert_eq!(changes("{", "o/runberth", "ci"), ["  it is not valid JSON"]);
     }
 
+    fn status(host: bool) -> Result<server::Status, String> {
+        let host = if host {
+            r#","host": {"owner": "o", "runberth": "o/runberth", "runner_label": "ci"}, "arch": "arm64""#
+        } else {
+            ""
+        };
+        server::Status::parse(&format!(
+            r#"{{"format": 1, "version": "0.2.0", "mode": "on-demand"{host}}}"#
+        ))
+    }
+
+    fn given(runberth: &str, label: &str) -> Options {
+        parse(&["--runberth", runberth, "--label", label]).unwrap()
+    }
+
+    #[test]
+    fn the_server_decides_the_values() {
+        let plain = values(&Options::default(), status(true)).unwrap();
+        assert_eq!(
+            (plain.runberth.as_str(), plain.label.as_str()),
+            ("o/runberth", "ci")
+        );
+        assert_eq!(
+            (plain.owner.as_deref(), plain.arch.as_deref()),
+            (Some("o"), Some("arm64"))
+        );
+        // Options that repeat the server's values are fine.
+        let same = values(&given("o/runberth", "ci"), status(true)).unwrap();
+        assert!(same.unchecked.is_none() && same.arch.as_deref() == Some("arm64"));
+        // Others would be refused at connect, so they are refused now.
+        let label = values(&given("o/runberth", "other"), status(true)).unwrap_err();
+        assert!(
+            label.starts_with("--label other does not match the server's runner_label ci"),
+            "{label}"
+        );
+        let runberth = values(&given("x/runberth", "ci"), status(true)).unwrap_err();
+        assert!(
+            runberth.starts_with("--runberth x/runberth does not match"),
+            "{runberth}"
+        );
+    }
+
+    #[test]
+    fn options_stand_in_only_when_the_server_cannot_say() {
+        let old = values(&given("o/runberth", "other"), status(false)).unwrap();
+        assert_eq!(old.label, "other");
+        assert_eq!(
+            old.unchecked.as_deref(),
+            Some("the server's Runberth 0.2.0 does not report its host config")
+        );
+        let down = values(&given("o/runberth", "ci"), Err("Cannot connect to h".into())).unwrap();
+        assert_eq!(down.unchecked.as_deref(), Some("Cannot connect to h"));
+        assert!(
+            values(&Options::default(), status(false))
+                .unwrap_err()
+                .contains("update it")
+        );
+        assert_eq!(
+            values(&Options::default(), Err("Cannot connect to h".into())).unwrap_err(),
+            "Cannot connect to h; or pass --runberth and --label"
+        );
+    }
+
     #[test]
     fn only_yes_replaces() {
         for yes in ["y", "Y", "yes", " YES\n"] {
@@ -365,6 +467,7 @@ mod tests {
             label: "ci".into(),
             owner: Some("o".into()),
             arch: Some("arm64".into()),
+            unchecked: None,
         };
         assert_eq!(
             next_steps(Some("o/app"), &values),
