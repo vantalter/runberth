@@ -168,3 +168,7 @@ The tag must match the version in `Cargo.toml`. Pushing it runs the release, whi
 The desktop app is the workspace member `app/`; `cargo test -p runberth-app` tests it alone, and `cargo build -p runberth-app --no-default-features` builds the `runberth` command without the tray. See [Build from source](docs/desktop-app.md#build-from-source) for the macOS app bundle.
 
 Reports from real installations are especially useful during this preview. Choose **Report a Problem…** in the desktop app, run `runberth report`, or [open an issue](https://github.com/vantalter/runberth/issues/new?template=bug_report.yml): the form fills in the versions, OS, and processor, and asks for the rest. Connected runner count, workload, and memory observations help too. Remove tokens and repository secrets from logs before sharing them.
+
+## License
+
+Runberth is released under the [MIT License](LICENSE). The macOS app also includes [Sparkle](https://sparkle-project.org) and GitHub's mark from [Primer Octicons](https://github.com/primer/octicons), each under its own MIT License.
