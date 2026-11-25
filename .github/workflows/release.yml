@@ -259,12 +259,16 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
+          # Which file is which, above the notes GitHub generates from the
+          # merged pull requests.
+          notes="$RUNNER_TEMP/notes.md"
+          sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{TAG}}/$TAG/g" .github/release-notes.md > "$notes"
           cd release-files
           sha256sum * > SHA256SUMS
           # The app's update feed and `latest` downloads read the latest
           # release, which GitHub never sets to a pre-release.
           if [ "$PRERELEASE" = true ]; then
-            gh release create "$TAG" * --prerelease --generate-notes --title "Runberth $TAG"
+            gh release create "$TAG" * --prerelease --generate-notes --notes-file "$notes" --title "Runberth $TAG"
           else
-            gh release create "$TAG" * --generate-notes --title "Runberth $VERSION"
+            gh release create "$TAG" * --generate-notes --notes-file "$notes" --title "Runberth $VERSION"
           fi
