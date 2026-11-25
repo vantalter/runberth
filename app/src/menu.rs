@@ -25,6 +25,9 @@ pub enum Action {
     Logs(String),
     /// Run `runberth update` in a terminal, where sudo can ask for a password.
     UpdateServer,
+    /// Choose the install's options, then run `runberth install` in a
+    /// terminal.
+    InstallServer,
     /// Open GitHub's bug report form, prefilled.
     Report,
     Quit,
@@ -331,9 +334,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
             };
             items.push(builder.info(format!("{mode} · {lock}")));
         }
-        (Some(name), Some(Err(_))) if view.removed => {
-            items.push(builder.info(format!("{name} — Runberth removed")));
-            items.push(builder.info("Install it again with runberth install"));
+        (Some(name), Some(Err(error))) if view.removed || error == crate::server::NOT_INSTALLED => {
+            let state = if view.removed {
+                "Runberth removed"
+            } else {
+                "Runberth not installed"
+            };
+            items.push(builder.info(format!("{name} — {state}")));
+            items.push(builder.item("Install Runberth on Server…", Action::InstallServer));
         }
         (Some(name), Some(Err(error))) => {
             items.push(builder.info(format!("{name} — unreachable")));
@@ -348,11 +356,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     for error in view.token_error.iter().chain(&view.errors) {
         items.push(builder.info(error.clone()));
     }
-    // A removed server has no repositories section, not even an empty one.
-    if !(view.removed && view.repos.is_empty()) {
+    // A server without Runberth has no repositories section, not even an
+    // empty one.
+    let missing =
+        view.removed || matches!(&view.server, Some(Err(error)) if error == crate::server::NOT_INSTALLED);
+    if !(missing && view.repos.is_empty()) {
         items.push(builder.separator());
     }
-    if view.repos.is_empty() && !view.removed {
+    if view.repos.is_empty() && !missing {
         let empty = if status.is_some() {
             "No repositories connected"
         } else {
@@ -457,6 +468,9 @@ fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u
     let tooltip = match icon {
         "attention" => "Runberth — job results need a working GitHub token".to_owned(),
         "offline" if view.removed => "Runberth — removed from the server".to_owned(),
+        "offline" if matches!(&view.server, Some(Err(error)) if error == crate::server::NOT_INSTALLED) => {
+            "Runberth — not installed on the server".to_owned()
+        }
         "offline" => "Runberth — server unreachable".to_owned(),
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
@@ -781,17 +795,37 @@ mod tests {
         let mut removed = view(Some(Err("sudo: a password is required".into())), vec![]);
         removed.removed = true;
         removed.repos.clear();
-        let (menu, _) = build(&removed);
+        let (menu, actions) = build(&removed);
         assert_eq!(
             labels(&menu["items"])[0..2],
             [
                 "ubuntu@192.0.2.1 — Runberth removed",
-                "Install it again with runberth install"
+                "Install Runberth on Server…"
             ]
         );
+        let id = find(&menu["items"], "Install Runberth on Server…")["id"]
+            .as_u64()
+            .unwrap() as u32;
+        assert_eq!(actions[&id], Action::InstallServer);
         assert_eq!(menu["icon"], "offline");
         assert_eq!(menu["tooltip"], "Runberth — removed from the server");
         assert_eq!(labels(&menu["items"])[2..4], ["---", "Refresh Now"]);
+    }
+
+    #[test]
+    fn a_server_without_runberth_offers_to_install_it() {
+        let mut fresh = view(Some(Err(crate::server::NOT_INSTALLED.into())), vec![]);
+        fresh.repos.clear();
+        let (menu, _) = build(&fresh);
+        assert_eq!(
+            labels(&menu["items"])[0..3],
+            [
+                "ubuntu@192.0.2.1 — Runberth not installed",
+                "Install Runberth on Server…",
+                "---"
+            ]
+        );
+        assert_eq!(menu["tooltip"], "Runberth — not installed on the server");
     }
 
     #[test]

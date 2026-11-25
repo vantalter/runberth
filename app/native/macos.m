@@ -231,6 +231,12 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
 @property NSTextField *testStatus, *tokenState, *loginNote, *version, *settingsPath;
+/* Install Runberth…, enabled unless the server is known to have Runberth. */
+@property NSButton *installButton;
+/* The install options in their sheet. */
+@property NSPopUpButton *installSwap;
+@property NSButton *installOnDemand;
+@property NSTextField *installPackages;
 /* Enabled only when there is a token to save, or a stored one to remove. */
 @property NSButton *saveTokenButton, *removeTokenButton;
 /* A typed token is on its way to the keychain: once it is stored, the field
@@ -273,6 +279,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // One line for the test's result and the settings' errors, which also
     // replace a result that the edit made stale.
     self.testStatus = statusLine(300);
+    self.installButton = pushButton(@"Install Runberth…", self, @selector(installRunberth:));
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:self.testStatus];
     NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
@@ -281,7 +288,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         @[ @"SSH key:", column(@[ row(@[ self.key, pushButton(@"Choose…", self, @selector(chooseKey:)) ]),
                                   keyNote ]) ],
         NSNull.null,
-        @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus ]) ],
+        @[ @"", column(@[ row(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)),
+                                 self.installButton ]),
+                          self.testStatus ]) ],
     ]);
     NSBox *line = [[NSBox alloc] init];
     line.boxType = NSBoxSeparator;
@@ -705,6 +714,11 @@ static NSString *shellQuoted(NSString *path) {
     [self refreshUpdates];
     [self status:state];
     emit(@"token-check", @"");
+    // Install Runberth on Server… in the menu opens the options here.
+    if ([state[@"install"] boolValue]) {
+        ((NSTabViewController *)self.window.contentViewController).selectedTabViewItemIndex = 0;
+        [self installRunberth:nil];
+    }
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:nil];
     // Since macOS 14 an app cannot always activate itself; show the window anyway.
@@ -781,6 +795,62 @@ static NSString *shellQuoted(NSString *path) {
                     }
                   }];
 }
+/* The options for `runberth install`, which then runs in Terminal, where
+ * sudo can ask for the server's password and its output stays readable. */
+- (void)installRunberth:(id)sender {
+    if (self.window.attachedSheet)
+        return;
+    // Install the server the window shows, not an edit still being typed.
+    [self save];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Install Runberth on the server";
+    alert.informativeText =
+        @"Terminal runs runberth install, where sudo may ask for the server's password. It installs this app's "
+        @"version, the sudoers rule the app needs, and a host config for your GitHub token's account with the "
+        @"runner label runberth-ci.";
+    self.installSwap = [[NSPopUpButton alloc] init];
+    for (NSArray *choice in @[ @[ @"No swap", @0 ], @[ @"2 GB", @2 ], @[ @"3 GB", @3 ], @[ @"4 GB", @4 ] ]) {
+        [self.installSwap addItemWithTitle:choice[0]];
+        self.installSwap.lastItem.tag = [choice[1] integerValue];
+    }
+    [self.installSwap selectItemWithTag:3];
+    self.installOnDemand = [NSButton checkboxWithTitle:@"Start runners only when a job arrives (experimental)"
+                                                target:nil
+                                                action:nil];
+    self.installOnDemand.state = NSControlStateValueOn;
+    self.installPackages = [NSTextField textFieldWithString:@""];
+    self.installPackages.placeholderString = @"gcc git";
+    [self.installPackages.widthAnchor constraintEqualToConstant:240].active = YES;
+    NSTextField *swapNote = noteLabel();
+    swapNote.stringValue = @"Room for builds on a small server.";
+    NSTextField *onDemandNote = noteLabel();
+    onDemandNote.stringValue = @"Saves about 70 MB per repository; a job waits a few seconds for its runner.";
+    NSTextField *packagesNote = noteLabel();
+    packagesNote.stringValue = @"apt packages your builds need, removed again by cleanup.";
+    NSGridView *options = form(@[
+        @[ @"Swap:", column(@[ self.installSwap, swapNote ]) ],
+        @[ @"Runners:", column(@[ self.installOnDemand, onDemandNote ]) ],
+        @[ @"Packages:", column(@[ self.installPackages, packagesNote ]) ],
+    ]);
+    options.frame = NSMakeRect(0, 0, options.fittingSize.width, options.fittingSize.height);
+    alert.accessoryView = options;
+    [alert addButtonWithTitle:@"Install in Terminal"];
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];
+    cancel.keyEquivalent = @"\033";
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+                    if (response != NSAlertFirstButtonReturn)
+                        return;
+                    NSDictionary *choice = @{
+                        @"swap" : @(self.installSwap.selectedTag),
+                        @"on_demand" : @(self.installOnDemand.state == NSControlStateValueOn),
+                        @"packages" : self.installPackages.stringValue,
+                    };
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:choice options:0 error:NULL];
+                    setStatus(self.testStatus, @"Installing in Terminal…", YES);
+                    emit(@"install-server", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
+                  }];
+}
 /* "2:05" for a cleanup's running time. */
 static NSString *minutesAndSeconds(NSTimeInterval seconds) {
     long whole = (long)seconds;
@@ -848,6 +918,19 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
         setStatus(self.testStatus, state[@"test"], [state[@"test_ok"] boolValue]);
     if (state[@"cleanup_plan"])
         [self confirmCleanup:state[@"cleanup_plan"]];
+    if (state[@"installed"]) {
+        // 1 installed, 0 not, -1 not known: each button stays available
+        // unless the server is known not to need it.
+        int installed = [state[@"installed"] intValue];
+        self.installButton.enabled = installed != 1;
+        self.installButton.toolTip =
+            installed == 1 ? @"Runberth is installed: Update Server… in the menu updates it" : nil;
+        if (!self.cleanupStarted)
+            self.cleanupButton.enabled = installed != 0;
+        self.cleanupButton.toolTip = installed == 0 ? @"Runberth is not installed on this server" : nil;
+    }
+    if (state[@"install_error"])
+        setStatus(self.testStatus, state[@"install_error"], NO);
     if (state[@"cleanup_progress"] && self.cleanupStarted) {
         self.cleanupStep = state[@"cleanup_progress"];
         [self showCleanupProgress];
