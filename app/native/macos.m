@@ -244,6 +244,11 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* Installs the command, or removes the app's link once it is installed. */
 @property NSButton *commandLineButton;
 @property NSButton *cleanupButton;
+/* While a cleanup runs: when it started, the server's latest line, and the
+ * timer that shows both on the status line each second. */
+@property NSDate *cleanupStarted;
+@property NSString *cleanupStep;
+@property NSTimer *cleanupTimer;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
 @property NSButton *confirmButton;
@@ -768,13 +773,56 @@ static NSString *shellQuoted(NSString *path) {
                     self.confirmButton = nil;
                     self.confirmAlert = nil;
                     if (response == NSModalResponseOK) {
-                        setStatus(self.cleanupStatus, @"Removing Runberth from the server…", YES);
+                        [self startCleanupProgress];
                         emit(@"cleanup-execute", @"");
                     } else {
                         self.cleanupButton.enabled = YES;
                         setStatus(self.cleanupStatus, @"", YES);
                     }
                   }];
+}
+/* "2:05" for a cleanup's running time. */
+static NSString *minutesAndSeconds(NSTimeInterval seconds) {
+    long whole = (long)seconds;
+    return [NSString stringWithFormat:@"%ld:%02ld", whole / 60, whole % 60];
+}
+/* A cleanup takes minutes, mostly removing packages: the status line shows
+ * the server's latest step and a running clock, so it never looks stuck. */
+- (void)startCleanupProgress {
+    self.cleanupButton.enabled = NO;
+    self.cleanupStarted = [NSDate date];
+    self.cleanupStep = @"Removing Runberth from the server";
+    [self.cleanupTimer invalidate];
+    self.cleanupTimer = [NSTimer scheduledTimerWithTimeInterval:1
+                                                        repeats:YES
+                                                          block:^(NSTimer *timer) {
+                                                            (void)timer;
+                                                            [self showCleanupProgress];
+                                                          }];
+    [self showCleanupProgress];
+}
+- (void)showCleanupProgress {
+    if (!self.cleanupStarted)
+        return;
+    NSString *elapsed = minutesAndSeconds(-self.cleanupStarted.timeIntervalSinceNow);
+    // apt's lines end in "...": one ellipsis is enough.
+    NSString *step = [self.cleanupStep
+        stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@". …"]];
+    // The clock first, so a long apt line cannot push it out of sight.
+    setStatus(self.cleanupStatus, [NSString stringWithFormat:@"%@ · %@…", elapsed, step], YES);
+}
+/* How the cleanup ended stays on the status line, in colour, with its
+ * running time: a dialog could be dismissed while another app is in front
+ * during the minutes it takes, and the notification says it too. */
+- (void)finishCleanup:(NSString *)message ok:(BOOL)ok {
+    NSTimeInterval took = self.cleanupStarted ? -self.cleanupStarted.timeIntervalSinceNow : 0;
+    [self.cleanupTimer invalidate];
+    self.cleanupTimer = nil;
+    self.cleanupStarted = nil;
+    NSString *line = [NSString stringWithFormat:@"%@ %@ · took %@", ok ? @"✓" : @"✗", message, minutesAndSeconds(took)];
+    setStatus(self.cleanupStatus, line, ok);
+    if (ok)
+        self.cleanupStatus.textColor = NSColor.systemGreenColor;
 }
 /* Remove Everything is a plain, greyed-out button until the host is typed,
  * then red with white text, as the Clean Up… button that opened it. */
@@ -800,9 +848,15 @@ static NSString *shellQuoted(NSString *path) {
         setStatus(self.testStatus, state[@"test"], [state[@"test_ok"] boolValue]);
     if (state[@"cleanup_plan"])
         [self confirmCleanup:state[@"cleanup_plan"]];
+    if (state[@"cleanup_progress"] && self.cleanupStarted) {
+        self.cleanupStep = state[@"cleanup_progress"];
+        [self showCleanupProgress];
+    }
     if (state[@"cleanup"]) {
         setStatus(self.cleanupStatus, state[@"cleanup"], [state[@"cleanup_ok"] boolValue]);
         self.cleanupButton.enabled = YES;
+        if (state[@"cleanup_done"])
+            [self finishCleanup:state[@"cleanup"] ok:[state[@"cleanup_ok"] boolValue]];
     }
     if (state[@"token_stored"]) {
         if (self.savingToken && [state[@"token_stored"] boolValue] && [state[@"token_ok"] boolValue])

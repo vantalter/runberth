@@ -58,6 +58,11 @@ pub struct View {
     pub operations: Vec<(String, String)>,
     /// Private repositories that could be connected, or None without a token.
     pub candidates: Option<Vec<String>>,
+    /// While the server is being cleaned up: its latest line, empty at first.
+    pub cleanup: Option<String>,
+    /// A cleanup removed Runberth from this server, which has not answered
+    /// since.
+    pub removed: bool,
     pub now: i64,
 }
 
@@ -284,6 +289,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     let mut builder = Builder::default();
     let mut items = Vec::new();
     let status = view.server.as_ref().and_then(|server| server.as_ref().ok());
+    // A cleanup takes minutes: say so above everything, step by step.
+    if let Some(step) = &view.cleanup {
+        items.push(builder.info("Cleaning up the server…"));
+        if !step.is_empty() {
+            items.push(builder.info(short_line(step)));
+        }
+        items.push(builder.separator());
+    }
     match (&view.server_name, &view.server) {
         (None, _) => items.push(builder.info("No server set — choose Settings…")),
         (Some(name), Some(Ok(status))) => {
@@ -318,6 +331,10 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
             };
             items.push(builder.info(format!("{mode} · {lock}")));
         }
+        (Some(name), Some(Err(_))) if view.removed => {
+            items.push(builder.info(format!("{name} — Runberth removed")));
+            items.push(builder.info("Install it again with runberth install"));
+        }
         (Some(name), Some(Err(error))) => {
             items.push(builder.info(format!("{name} — unreachable")));
             items.push(builder.info(error.clone()));
@@ -331,8 +348,11 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     for error in view.token_error.iter().chain(&view.errors) {
         items.push(builder.info(error.clone()));
     }
-    items.push(builder.separator());
-    if view.repos.is_empty() {
+    // A removed server has no repositories section, not even an empty one.
+    if !(view.removed && view.repos.is_empty()) {
+        items.push(builder.separator());
+    }
+    if view.repos.is_empty() && !view.removed {
         let empty = if status.is_some() {
             "No repositories connected"
         } else {
@@ -385,6 +405,16 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     finish(builder, view, items)
 }
 
+/// A line cut to fit a menu, as apt's long package lines.
+fn short_line(text: &str) -> String {
+    const MAX: usize = 60;
+    if text.chars().count() <= MAX {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(MAX - 1).collect();
+    format!("{cut}…")
+}
+
 /// Whether this platform has a Settings window for the app's options.
 const SETTINGS_WINDOW: bool = cfg!(target_os = "macos");
 
@@ -426,6 +456,7 @@ fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u
     let (icon, active) = icon(view);
     let tooltip = match icon {
         "attention" => "Runberth — job results need a working GitHub token".to_owned(),
+        "offline" if view.removed => "Runberth — removed from the server".to_owned(),
         "offline" => "Runberth — server unreachable".to_owned(),
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
@@ -490,6 +521,8 @@ mod tests {
             update: updates::Status::Idle,
             operations: vec![],
             candidates: Some(vec!["o/r".into(), "o/new".into()]),
+            cleanup: None,
+            removed: false,
             now: epoch("2026-11-16T13:40:00Z").unwrap(),
         }
     }
@@ -722,6 +755,43 @@ mod tests {
                 .values()
                 .any(|action| matches!(action, Action::Logs(_) | Action::Disconnect(_)))
         );
+    }
+
+    #[test]
+    fn a_running_cleanup_shows_its_step_at_the_top() {
+        let mut cleaning = view(Some(Ok(status(vec![]))), vec![]);
+        cleaning.cleanup = Some(String::new());
+        let (menu, _) = build(&cleaning);
+        assert_eq!(labels(&menu["items"])[0..2], ["Cleaning up the server…", "---"]);
+        cleaning.cleanup = Some(format!(
+            "Removing libgstreamer-plugins-bad1.0-0:amd64 {}",
+            "x".repeat(40)
+        ));
+        let (menu, _) = build(&cleaning);
+        let step = &labels(&menu["items"])[1];
+        assert!(
+            step.starts_with("Removing libgstreamer") && step.ends_with('…'),
+            "{step}"
+        );
+        assert_eq!(step.chars().count(), 60);
+    }
+
+    #[test]
+    fn a_cleaned_up_server_says_so_instead_of_unreachable() {
+        let mut removed = view(Some(Err("sudo: a password is required".into())), vec![]);
+        removed.removed = true;
+        removed.repos.clear();
+        let (menu, _) = build(&removed);
+        assert_eq!(
+            labels(&menu["items"])[0..2],
+            [
+                "ubuntu@192.0.2.1 — Runberth removed",
+                "Install it again with runberth install"
+            ]
+        );
+        assert_eq!(menu["icon"], "offline");
+        assert_eq!(menu["tooltip"], "Runberth — removed from the server");
+        assert_eq!(labels(&menu["items"])[2..4], ["---", "Refresh Now"]);
     }
 
     #[test]
