@@ -456,11 +456,22 @@ static NSColor *closeButtonRed(void) {
     NSTextField *ask = [NSTextField wrappingLabelWithString:
         @"If you find it useful, star the project on GitHub or support its development with a coffee on Ko-fi."];
     free.preferredMaxLayoutWidth = ask.preferredMaxLayoutWidth = 400;
-    NSStackView *stack = column(@[ free, ask, choices ]);
+    // A problem goes to GitHub's bug report form, prefilled by the app.
+    NSBox *line = [[NSBox alloc] init];
+    line.boxType = NSBoxSeparator;
+    NSTextField *problem = [NSTextField labelWithString:@"Something not working?"];
+    NSStackView *report = row(@[ problem, pushButton(@"Report a Problem…", self, @selector(reportProblem:)) ]);
+    report.alignment = NSLayoutAttributeCenterY;
+    NSStackView *stack = column(@[ free, ask, choices, line, report ]);
     stack.spacing = 16;
     [stack setCustomSpacing:26 afterView:ask];
+    [stack setCustomSpacing:24 afterView:choices];
     [choices.widthAnchor constraintEqualToConstant:380].active = YES;
+    [line.widthAnchor constraintEqualToConstant:400].active = YES;
     return stack;
+}
+- (void)reportProblem:(id)sender {
+    emit(@"report", @"");
 }
 - (void)openProject:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ProjectURL]];

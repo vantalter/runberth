@@ -5,7 +5,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, install, server, settings, token};
+use crate::{config, install, report, server, settings, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
@@ -22,6 +22,7 @@ Runs Runberth commands on the server named in the desktop app's settings.
                                 Runberth installed on the server
   config [OPTIONS]              show or change the settings; see config --help
   install [OPTIONS]             set up Runberth on the server; see install --help
+  report                        open a bug report on GitHub, with your versions filled in
   update                        install this app's version on the server
   --version                     this app's version
 
@@ -45,7 +46,23 @@ enum Parsed<'a> {
     Run(Vec<&'a str>, bool),
     Install(install::Options),
     Config(Vec<&'a str>),
+    Report,
     Print(String, i32),
+}
+
+/// Prints the prefilled bug report URL, and opens it where a browser can.
+fn report_problem() -> i32 {
+    // The server's version and mode, when it answers; the report goes on
+    // without them.
+    let server = config::load(&config::settings_path())
+        .ok()
+        .and_then(|config| config.server().cloned())
+        .and_then(|server| server::fetch(&server).ok())
+        .map(|status| report::server_summary(&status));
+    let url = report::url(report::Place::Command, server.as_deref());
+    println!("Review and submit the report in your browser:\n{url}");
+    report::open(&url);
+    0
 }
 
 const CONFIG_USAGE: &str = "Usage: runberth config [OPTIONS]
@@ -163,6 +180,7 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         )),
         ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
         ["config", "--help" | "-h"] => Some(Parsed::Print(CONFIG_USAGE.to_owned(), 0)),
+        ["report"] => Some(Parsed::Report),
         ["config", options @ ..] => Some(Parsed::Config(options.to_vec())),
         ["install" | "update", ..] => match install::parse(&args) {
             Ok(options) => Some(Parsed::Install(options)),
@@ -189,6 +207,7 @@ pub fn run(args: &[String]) -> Option<i32> {
             eprintln!("{text}");
             Some(code)
         }
+        Parsed::Report => Some(report_problem()),
         Parsed::Config(options) => Some(configure(&options).map_or_else(
             |error| {
                 eprintln!("runberth: {error}");
@@ -268,6 +287,7 @@ mod tests {
                 Some((vec![format!("install update={}", options.update)], false))
             }
             Some(Parsed::Config(options)) => Some((vec![format!("config {}", options.join(" "))], false)),
+            Some(Parsed::Report) => Some((vec!["report".into()], false)),
             None => None,
         }
     }

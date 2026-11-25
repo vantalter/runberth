@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod github;
 mod install;
+mod report;
 mod server;
 mod settings;
 mod token;

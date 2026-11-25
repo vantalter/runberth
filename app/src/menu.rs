@@ -25,6 +25,8 @@ pub enum Action {
     Logs(String),
     /// Run `runberth update` in a terminal, where sudo can ask for a password.
     UpdateServer,
+    /// Open GitHub's bug report form, prefilled.
+    Report,
     Quit,
 }
 
@@ -401,6 +403,8 @@ fn menu_settings(builder: &mut Builder, view: &View, items: &mut Vec<Value>) {
             }
         }
     }
+    // On macOS, Settings > Support has it.
+    items.push(builder.item("Report a Problem…", Action::Report));
 }
 
 fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u32, Action>) {

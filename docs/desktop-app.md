@@ -122,6 +122,8 @@ runberth cleanup
 
 To see what the app shows on each refresh, run it from a terminal with `RUNBERTH_APP_TRACE=1`: it prints each menu as JSON. On macOS, run `/Applications/Runberth.app/Contents/MacOS/runberth`.
 
+To report a problem, choose **Report a Problem…** in Settings > Support on macOS or in the menu on Linux, or run `runberth report`. It opens a new GitHub issue with the app's version, your system and processor, and the server's Runberth version and mode filled in. It never includes the host, user, key, repositories, or token. Nothing is sent until you submit the issue; add the steps and any logs first.
+
 ## Build from source
 
 The app lives in `app/`, a member of the Cargo workspace.

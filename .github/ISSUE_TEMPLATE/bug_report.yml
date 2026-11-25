@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in Runberth, its desktop app, or its runberth command does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Issues are public. Before you paste logs or screenshots, remove tokens, your server's
+        address and user, and any repository names you would rather not share.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - macOS app
+        - Linux tray app
+        - runberth command only
+        - The server itself
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App or command version
+      description: Shown in Settings > Updates, or by `runberth --version`.
+      placeholder: runberth 0.2.0
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      description: The server's Runberth version and mode, from the menu or `runberth status`, and its Ubuntu release.
+      placeholder: Runberth 0.2.0, on demand, Ubuntu 24.04 x86_64
+  - type: input
+    id: system
+    attributes:
+      label: Your computer
+      description: OS version and processor; on Linux, the desktop and its tray, such as GNOME with AppIndicator or KDE.
+      placeholder: macOS 15.5, arm64
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: >-
+        Anything relevant from `runberth logs OWNER/REPO`, `runberth status`, or the app run from a
+        terminal with RUNBERTH_APP_TRACE=1.
+      render: text

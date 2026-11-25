@@ -3,7 +3,7 @@
 //! tray menu, and announces finished runs. The native side (native/) owns
 //! the UI loop, the tray icon, its menu, and notifications.
 
-use crate::{cli, config, github, login, menu, native, runs, server, settings, token, updates};
+use crate::{cli, config, github, login, menu, native, report, runs, server, settings, token, updates};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_int};
 use std::io::Write;
@@ -22,6 +22,22 @@ enum Wake {
     MenuOpened,
     CheckUpdates,
     Stop,
+}
+
+/// The server's Runberth version and mode, for a bug report.
+static SERVER_SUMMARY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Opens GitHub's bug report form, prefilled with versions and the system.
+fn report_problem() {
+    let place = if cfg!(target_os = "macos") {
+        report::Place::MacApp
+    } else {
+        report::Place::LinuxApp
+    };
+    let server = SERVER_SUMMARY.lock().ok().and_then(|summary| summary.clone());
+    in_background(move || {
+        report::open(&report::url(place, server.as_deref()));
+    });
 }
 
 /// The action behind each item of the menu on screen.
@@ -85,6 +101,7 @@ fn perform(action: Action) {
         Action::Connect(repo) => start_operation("connect", repo),
         Action::Logs(repo) => show_logs(repo),
         Action::UpdateServer => run_in_terminal("update"),
+        Action::Report => report_problem(),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
             wake(Wake::Stop);
@@ -135,6 +152,7 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
             token_status(result.map(|()| "Token stored"))
         }),
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
+        "report" => report_problem(),
         "cleanup-preview" => in_background(|| {
             let status = match run_on_server(&["cleanup"], false) {
                 Ok(plan) => json!({"cleanup_plan": String::from_utf8_lossy(&plan).trim_end()}),
@@ -471,6 +489,9 @@ impl Poller {
         let server = config.server().cloned();
         let result = server.as_ref().map(server::fetch);
         if let Some(Ok(status)) = &result {
+            if let Ok(mut summary) = SERVER_SUMMARY.lock() {
+                *summary = Some(report::server_summary(status));
+            }
             self.last_status = Some(status.clone());
         }
         let runners = self

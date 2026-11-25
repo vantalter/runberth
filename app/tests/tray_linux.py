@@ -194,6 +194,7 @@ try:
         check("ubuntu@vps.example · Runberth 0.2.0" in shown, "the server line")
         check("On demand · busy with r" in shown, "the lock holder")
         check("Edit Settings…" in shown, "settings open as a file on Linux")
+        check("Report a Problem…" in shown, "the bug report item")
         check(any("check — in progress on runberth-r" in label for label in shown), "the job and its runner")
         item = lambda name: call(owner, "/StatusNotifierItem", "org.freedesktop.DBus.Properties", "Get",
                                  GLib.Variant("(ss)", ("org.kde.StatusNotifierItem", name)))[0]
