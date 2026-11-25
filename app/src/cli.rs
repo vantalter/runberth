@@ -5,7 +5,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, install, report, server, settings, token};
+use crate::{config, github, install, report, server, settings, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
@@ -255,6 +255,11 @@ fn execute(remote: &[&str], needs_token: bool) -> Result<i32, String> {
         }
         Some(line)
     };
+    if let (["connect", repo], Some(token)) = (remote, &token) {
+        if let Err(missing) = github::GitHub::new(token.clone()).check_manifest(repo) {
+            return Err(format!("{}\nCreate it at {}", missing.message, missing.page));
+        }
+    }
     // A terminal for commands that redraw or follow, such as status --watch.
     let terminal = token.is_none() && stdin.is_terminal() && std::io::stdout().is_terminal();
     let mut command = server::command(server, remote, terminal)?;

@@ -29,7 +29,22 @@ pub fn verify(repo: &str, host: &HostConfig, api: &dyn Api) -> Result<()> {
         bail!("Token lacks repository admin access: {repo}");
     }
 
-    let manifest = api.json("GET", &format!("{API}/repos/{repo}/contents/{MANIFEST_PATH}"))?;
+    let url = format!("{API}/repos/{repo}/contents/{MANIFEST_PATH}");
+    let reply = api.call("GET", &url)?;
+    // The repository itself answered above, so a 404 here is the missing
+    // opt-in file, the usual first-time mistake: say what to commit.
+    if reply.status == 404 {
+        bail!(
+            "{repo} has no {MANIFEST_PATH} on its default branch. Commit one with \
+             {{\"version\": 1, \"runberth\": \"{}\", \"runner_label\": \"{}\"}}, then connect again",
+            host.runberth,
+            host.runner_label
+        );
+    }
+    if !(200..300).contains(&reply.status) {
+        bail!("GitHub returned {} for GET {url}", reply.status);
+    }
+    let manifest = reply.body;
     let content = match (
         manifest["type"].as_str(),
         manifest["path"].as_str(),
@@ -125,7 +140,12 @@ mod tests {
             404,
             Value::Null,
         );
-        assert!(verify(REPO, &host(), &api).unwrap_err().0.contains("404"));
+        assert_eq!(
+            verify(REPO, &host(), &api).unwrap_err().0,
+            "vantalter/example has no .github/runberth.json on its default branch. Commit one with \
+             {\"version\": 1, \"runberth\": \"vantalter/runberth\", \"runner_label\": \"runberth-ci\"}, \
+             then connect again"
+        );
     }
 
     #[test]

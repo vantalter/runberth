@@ -217,14 +217,15 @@ fn start_operation(command: &'static str, repo: String) {
                 format!("Disconnected {name}"),
                 "Its runner is removed from the server and GitHub".to_owned(),
             ),
-            (Err(error), "connect") => (format!("Cannot connect {name}"), error.clone()),
-            (Err(error), _) => (format!("Cannot disconnect {name}"), error.clone()),
+            (Err((error, _)), "connect") => (format!("Cannot connect {name}"), error.clone()),
+            (Err((error, _)), _) => (format!("Cannot disconnect {name}"), error.clone()),
         };
-        native::notify(
-            &title,
-            &body,
-            &format!("https://github.com/{repo}/settings/actions/runners"),
-        );
+        // A missing opt-in file opens GitHub's page to create it.
+        let page = match &result {
+            Err((_, Some(page))) => page.clone(),
+            _ => format!("https://github.com/{repo}/settings/actions/runners"),
+        };
+        native::notify(&title, &body, &page);
         if let Ok(mut operations) = OPERATIONS.lock() {
             operations.retain(|(name, _)| *name != repo);
         }
@@ -233,8 +234,18 @@ fn start_operation(command: &'static str, repo: String) {
     });
 }
 
-fn run_operation(command: &str, repo: &str) -> Result<(), String> {
-    run_on_server(&[command, repo], true).map(drop)
+/// Runs the operation; on failure, the reason and the page that helps.
+fn run_operation(command: &str, repo: &str) -> Result<(), (String, Option<String>)> {
+    if command == "connect" {
+        let config = config::load(&config::settings_path()).map_err(|error| (error, None))?;
+        let token = token::read(&config).map_err(|error| (error, None))?;
+        github::GitHub::new(token)
+            .check_manifest(repo)
+            .map_err(|missing| (missing.message, Some(missing.page)))?;
+    }
+    run_on_server(&[command, repo], true)
+        .map(drop)
+        .map_err(|error| (error, None))
 }
 
 /// Runs `runberth REMOTE...` on the server in the settings and returns its

@@ -8,6 +8,18 @@ use serde::Deserialize;
 const API: &str = "https://api.github.com";
 /// The error for a token GitHub no longer accepts, such as an expired one.
 pub const REJECTED: &str = "GitHub rejected the token";
+/// The opt-in file each connected repository commits.
+const MANIFEST: &str = ".github/runberth.json";
+
+/// A repository without the opt-in file, which the server would refuse.
+/// The repository was listed with the same token, so a 404 for the file
+/// means the file is missing.
+pub struct MissingManifest {
+    pub message: String,
+    /// GitHub's page for creating the file on the default branch, with its
+    /// name filled in.
+    pub page: String,
+}
 
 /// RUNBERTH_APP_GITHUB_API replaces the API in tests/tray_linux.py.
 fn api() -> String {
@@ -78,21 +90,23 @@ impl GitHub {
         Self { agent, token }
     }
 
-    fn get(&self, path: &str) -> Result<ureq::Response, String> {
+    fn request(&self, path: &str) -> ureq::Request {
         self.agent
             .get(&format!("{}{path}", api()))
             .set("Authorization", &format!("Bearer {}", self.token))
             .set("Accept", "application/vnd.github+json")
             .set("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(|error| match error {
-                ureq::Error::Status(401, _) => REJECTED.to_owned(),
-                ureq::Error::Status(403 | 404, _) => {
-                    "The GitHub token cannot read this repository's Actions".to_owned()
-                }
-                ureq::Error::Status(code, _) => format!("GitHub answered {code}"),
-                ureq::Error::Transport(_) => "Cannot reach GitHub".to_owned(),
-            })
+    }
+
+    fn get(&self, path: &str) -> Result<ureq::Response, String> {
+        self.request(path).call().map_err(|error| match error {
+            ureq::Error::Status(401, _) => REJECTED.to_owned(),
+            ureq::Error::Status(403 | 404, _) => {
+                "The GitHub token cannot read this repository's Actions".to_owned()
+            }
+            ureq::Error::Status(code, _) => format!("GitHub answered {code}"),
+            ureq::Error::Transport(_) => "Cannot reach GitHub".to_owned(),
+        })
     }
 
     /// The repository's most recent workflow runs, newest first.
@@ -128,6 +142,28 @@ impl GitHub {
             .filter(|repository| !repository.archived)
             .map(|repository| repository.full_name)
             .collect())
+    }
+
+    /// Fails with what to do when the repository's default branch has no
+    /// `.github/runberth.json`, before the server is asked to connect it.
+    /// Other failures are left for the server to report.
+    pub fn check_manifest(&self, repo: &str) -> Result<(), MissingManifest> {
+        let path = format!("/repos/{repo}/contents/{MANIFEST}");
+        if !matches!(self.request(&path).call(), Err(ureq::Error::Status(404, _))) {
+            return Ok(());
+        }
+        let branch = self
+            .get(&format!("/repos/{repo}"))
+            .ok()
+            .and_then(|response| response.into_json::<serde_json::Value>().ok())
+            .and_then(|remote| remote["default_branch"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "main".into());
+        Err(MissingManifest {
+            message: format!(
+                "{repo} has no {MANIFEST} on its default branch; commit it there, then connect again"
+            ),
+            page: format!("https://github.com/{repo}/new/{branch}?filename={MANIFEST}"),
+        })
     }
 
     pub fn jobs(&self, repo: &str, run: u64) -> Result<Vec<Job>, String> {
