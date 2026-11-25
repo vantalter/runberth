@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::arch::Arch;
 use crate::bail;
 use crate::error::{Context, Result};
 use crate::github::{self, API, Api};
@@ -24,8 +25,6 @@ use crate::system::{self, Account, as_user, signals};
 
 const RELEASE_URL: &str = "https://api.github.com/repos/actions/runner/releases/latest";
 const DOWNLOAD_PREFIX: &str = "https://github.com/actions/runner/releases/download/";
-const SHA_BEGIN: &str = "<!-- BEGIN SHA linux-x64 -->";
-const SHA_END: &str = "<!-- END SHA linux-x64 -->";
 
 /// A native library the runner needs, matched the way the runner's own
 /// bin/installdependencies.sh finds it, so package names that change between
@@ -116,12 +115,18 @@ pub fn packages_for(missing: &[&Library], available: &BTreeSet<String>) -> Resul
     Ok(packages)
 }
 
-fn published_shas(body: &str) -> BTreeSet<String> {
+/// The SHA-256 values the release notes publish for one platform, between
+/// markers such as `<!-- BEGIN SHA linux-x64 -->` and its END.
+fn published_shas(body: &str, platform: &str) -> BTreeSet<String> {
+    let (begin, finish) = (
+        format!("<!-- BEGIN SHA {platform} -->"),
+        format!("<!-- END SHA {platform} -->"),
+    );
     let mut found = BTreeSet::new();
     let mut rest = body;
-    while let Some(start) = rest.find(SHA_BEGIN) {
-        rest = &rest[start + SHA_BEGIN.len()..];
-        let Some(end) = rest.find(SHA_END) else { break };
+    while let Some(start) = rest.find(&begin) {
+        rest = &rest[start + begin.len()..];
+        let Some(end) = rest.find(&finish) else { break };
         let candidate = &rest[..end];
         if candidate.len() == 64
             && candidate
@@ -135,8 +140,10 @@ fn published_shas(body: &str) -> BTreeSet<String> {
     found
 }
 
-/// The linux-x64 archive URL and the SHA-256 GitHub published for it.
-pub fn runner_asset(release: &Value) -> Result<(String, String)> {
+/// The runner archive for this architecture, as linux-x64 or linux-arm64,
+/// and the SHA-256 GitHub published for it.
+pub fn runner_asset(release: &Value, arch: Arch) -> Result<(String, String)> {
+    let platform = format!("linux-{}", arch.runner());
     let version = release["tag_name"]
         .as_str()
         .unwrap_or_default()
@@ -149,7 +156,7 @@ pub fn runner_asset(release: &Value) -> Result<(String, String)> {
     {
         bail!("Unexpected runner release tag");
     }
-    let name = format!("actions-runner-linux-x64-{version}.tar.gz");
+    let name = format!("actions-runner-{platform}-{version}.tar.gz");
     let assets: Vec<&Value> = release["assets"]
         .as_array()
         .map(|assets| {
@@ -166,7 +173,7 @@ pub fn runner_asset(release: &Value) -> Result<(String, String)> {
     if !url.starts_with(DOWNLOAD_PREFIX) {
         bail!("Unexpected runner download URL: {url}");
     }
-    let mut published = published_shas(release["body"].as_str().unwrap_or_default());
+    let mut published = published_shas(release["body"].as_str().unwrap_or_default(), &platform);
     if let Some(digest) = asset["digest"]
         .as_str()
         .and_then(|digest| digest.strip_prefix("sha256:"))
@@ -174,7 +181,7 @@ pub fn runner_asset(release: &Value) -> Result<(String, String)> {
         published.insert(digest.to_owned());
     }
     if published.len() != 1 {
-        bail!("Runner release does not publish one consistent linux-x64 SHA-256");
+        bail!("Runner release does not publish one consistent {platform} SHA-256");
     }
     Ok((url.to_owned(), published.pop_first().unwrap_or_default()))
 }
@@ -339,7 +346,7 @@ fn register(
     registry: &Registry,
 ) -> Result<()> {
     install_runtime_dependencies(registry)?;
-    let (url, sha256) = runner_asset(&api.json("GET", RELEASE_URL)?)?;
+    let (url, sha256) = runner_asset(&api.json("GET", RELEASE_URL)?, Arch::host()?)?;
     let runner_dir = PathBuf::from(&entry.runner_dir);
     system::ensure_dir(&runner_dir, 0o700, account.uid, account.gid)?;
     with_rollback(&runner_dir, || {
@@ -453,14 +460,49 @@ mod tests {
         if let Some(digest) = digest {
             asset["digest"] = json!(digest);
         }
-        let default_body = format!("{SHA_BEGIN}{SHA}{SHA_END}");
+        let default_body = format!("<!-- BEGIN SHA linux-x64 -->{SHA}<!-- END SHA linux-x64 -->");
         json!({"tag_name": "v2.330.0", "body": body.unwrap_or(&default_body),
                "assets": [{"name": "actions-runner-osx-arm64-2.330.0.tar.gz"}, asset]})
     }
 
+    /// Picks from GitHub's real runner release for both processors:
+    /// RUNBERTH_TEST_LIVE=1 cargo test live_runner_release -- --ignored
+    #[test]
+    #[ignore = "needs network access to GitHub"]
+    fn live_runner_release() {
+        assert!(std::env::var_os("RUNBERTH_TEST_LIVE").is_some());
+        let body = ureq::get(RELEASE_URL).call().unwrap().into_string().unwrap();
+        let release: Value = serde_json::from_str(&body).unwrap();
+        for arch in [Arch::X64, Arch::Arm64] {
+            let (url, sha) = runner_asset(&release, arch).unwrap();
+            println!("{arch:?}: {url} {sha}");
+            assert!(url.contains(&format!("linux-{}", arch.runner())));
+        }
+    }
+
+    #[test]
+    fn arm64_servers_get_the_arm64_runner() {
+        let arm = format!(
+            "{}{SHA}<!-- END SHA linux-arm64 -->",
+            "<!-- BEGIN SHA linux-arm64 -->"
+        );
+        let release = json!({"tag_name": "v2.330.0",
+        "body": format!("<!-- BEGIN SHA linux-x64 -->{}<!-- END SHA linux-x64 -->{arm}", "b".repeat(64)),
+        "assets": [
+            {"name": "actions-runner-linux-x64-2.330.0.tar.gz",
+             "browser_download_url": format!("{DOWNLOAD_PREFIX}v2.330.0/actions-runner-linux-x64-2.330.0.tar.gz")},
+            {"name": "actions-runner-linux-arm64-2.330.0.tar.gz",
+             "browser_download_url": format!("{DOWNLOAD_PREFIX}v2.330.0/actions-runner-linux-arm64-2.330.0.tar.gz")},
+        ]});
+        let (url, sha) = runner_asset(&release, Arch::Arm64).unwrap();
+        assert!(url.ends_with("actions-runner-linux-arm64-2.330.0.tar.gz"));
+        assert_eq!(sha, SHA);
+        assert_eq!(runner_asset(&release, Arch::X64).unwrap().1, "b".repeat(64));
+    }
+
     #[test]
     fn release_notes_checksum_is_used() {
-        let (url, sha) = runner_asset(&release(None, None, None)).unwrap();
+        let (url, sha) = runner_asset(&release(None, None, None), Arch::X64).unwrap();
         assert!(url.ends_with("actions-runner-linux-x64-2.330.0.tar.gz"));
         assert_eq!(sha, SHA);
     }
@@ -469,12 +511,14 @@ mod tests {
     fn asset_digest_must_agree_with_release_notes() {
         let agreeing = format!("sha256:{SHA}");
         assert_eq!(
-            runner_asset(&release(None, Some(&agreeing), None)).unwrap().1,
+            runner_asset(&release(None, Some(&agreeing), None), Arch::X64)
+                .unwrap()
+                .1,
             SHA
         );
         let other = format!("sha256:{}", "b".repeat(64));
         assert!(
-            runner_asset(&release(None, Some(&other), None))
+            runner_asset(&release(None, Some(&other), None), Arch::X64)
                 .unwrap_err()
                 .0
                 .contains("consistent")
@@ -484,15 +528,18 @@ mod tests {
     #[test]
     fn missing_checksum_or_foreign_url_is_rejected() {
         assert!(
-            runner_asset(&release(Some(""), None, None))
+            runner_asset(&release(Some(""), None, None), Arch::X64)
                 .unwrap_err()
                 .0
                 .contains("consistent")
         );
-        let foreign = runner_asset(&release(None, None, Some("https://example.com/runner.tar.gz")));
+        let foreign = runner_asset(
+            &release(None, None, Some("https://example.com/runner.tar.gz")),
+            Arch::X64,
+        );
         assert!(foreign.unwrap_err().0.contains("download URL"));
         assert!(
-            runner_asset(&json!({"tag_name": "latest"}))
+            runner_asset(&json!({"tag_name": "latest"}), Arch::X64)
                 .unwrap_err()
                 .0
                 .contains("tag")

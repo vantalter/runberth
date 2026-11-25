@@ -9,7 +9,6 @@
 # sets up the whole host. Re-running it updates Runberth.
 set -euo pipefail
 
-readonly ASSET=runberth-x86_64-unknown-linux-musl
 
 usage() {
   cat <<'EOF'
@@ -22,8 +21,9 @@ Required:
 Options:
   --user NAME               SSH account on the VPS (default: $RUNBERTH_USER, else root)
   --port PORT               SSH port (default: 22)
-  --binary PATH             install this Linux x86_64 binary instead of downloading
-                            a release; PATH.sha256 is checked if present
+  --binary PATH             install this Linux binary, built for the server's x86_64
+                            or arm64 processor, instead of downloading a release;
+                            PATH.sha256 is checked if present
   --release-repo OWNER/REPO download releases from here (default: vantalter/runberth)
   --version TAG             install this release, such as v0.1.0 (default: the latest)
   --config PATH             host config to install (default: config/host.json)
@@ -105,7 +105,23 @@ sha256_check() { # DIR CHECKSUM_FILE
   fi
 }
 
-# 1. The binary, verified against its published checksum.
+known_hosts=(-o StrictHostKeyChecking=yes)
+[[ "$accept_new" == true ]] && known_hosts=(-o StrictHostKeyChecking=accept-new)
+ssh_opts=(-i "$key" -o IdentitiesOnly=yes -o BatchMode=yes "${known_hosts[@]}")
+target="$user@$host"
+scp_target="$user@$host"
+[[ "$host" == *:* ]] && scp_target="$user@[$host]"
+
+# 1. The server's processor picks the release binary: x86_64 or aarch64.
+machine="$(ssh "${ssh_opts[@]}" -p "$port" "$target" 'uname -m')" \
+  || fail "cannot connect to $target; check the key, and the host key (see --accept-new-host-key)"
+case "$machine" in
+  x86_64 | amd64) ASSET=runberth-x86_64-unknown-linux-musl ;;
+  aarch64 | arm64) ASSET=runberth-aarch64-unknown-linux-musl ;;
+  *) fail "Runberth runs on x86_64 or arm64 Linux; $host is $machine" ;;
+esac
+
+# 2. The binary, verified against its published checksum.
 if [[ -n "$binary" ]]; then
   [[ -f "$binary" ]] || fail "cannot read binary: $binary"
   cp "$binary" "$workdir/$ASSET"
@@ -127,7 +143,7 @@ else
 fi
 cp "$config" "$workdir/host.json"
 
-# 2. The steps that run on the server, in one SSH session so sudo asks for a
+# 3. The steps that run on the server, in one SSH session so sudo asks for a
 #    password at most once.
 sudo_cmd=""
 [[ "$user" == root ]] || sudo_cmd="sudo"
@@ -165,6 +181,9 @@ if [[ -n "$packages" ]]; then
 fi
 if [[ "$on_demand" == true ]]; then
   $sudo_cmd /opt/runberth/bin/runberth on-demand on
+elif systemctl is-active --quiet runberth-dock.service 2>/dev/null; then
+  # The dock keeps running the binary it started with.
+  $sudo_cmd systemctl restart runberth-dock.service
 fi
 if [[ "$sudoers" == true ]]; then
   printf '%s\n' "$sudoers_rule" > sudoers.runberth
@@ -175,14 +194,7 @@ fi
 REMOTE
 } > "$workdir/install.sh"
 
-# 3. Upload and run.
-known_hosts=(-o StrictHostKeyChecking=yes)
-[[ "$accept_new" == true ]] && known_hosts=(-o StrictHostKeyChecking=accept-new)
-ssh_opts=(-i "$key" -o IdentitiesOnly=yes -o BatchMode=yes "${known_hosts[@]}")
-target="$user@$host"
-scp_target="$user@$host"
-[[ "$host" == *:* ]] && scp_target="$user@[$host]"
-
+# 4. Upload and run.
 remote_dir="$(ssh "${ssh_opts[@]}" -p "$port" "$target" 'mktemp -d /tmp/runberth-install.XXXXXX')" \
   || fail "cannot connect to $target; check the key, and the host key (see --accept-new-host-key)"
 [[ "$remote_dir" =~ ^/tmp/runberth-install\.[A-Za-z0-9]+$ ]] || fail "unexpected remote directory: $remote_dir"

@@ -118,46 +118,132 @@ fn service_state(unit: &str) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn snapshot() -> String {
-    let mut lines = Vec::new();
-    lines.push(render_memory(
-        &fs::read_to_string("/proc/meminfo").unwrap_or_default(),
-    ));
-    if let Ok(load) = fs::read_to_string("/proc/loadavg") {
-        let load: Vec<&str> = load.split_whitespace().take(3).collect();
-        lines.push(format!("Load:    {} (1, 5, 15 min)", load.join(" ")));
-    }
-    if let Ok(free) = free_disk(Path::new("/")) {
-        lines.push(format!("Disk:    {} GiB free on /", free / (1024 * MIB)));
-    }
-    lines.push(render_lock(lock_holders(Path::new(paths::STATE_ROOT)).as_deref()));
-    let on_demand = crate::dock::on_demand();
-    lines.push(if on_demand {
-        format!(
-            "Mode:    on demand (dock {})",
-            service_state(crate::dock::DOCK_UNIT)
-        )
-    } else {
-        "Mode:    always on".into()
-    });
-    match cleanup::inventory(Path::new(paths::REGISTRY)) {
-        Ok(inventory) if inventory.runners.is_empty() => lines.push("Runners: none connected".into()),
-        Ok(inventory) => {
-            lines.push("Runners:".into());
-            for runner in &inventory.runners {
-                let repo = &runner.entry.repo;
-                let state = service_state(&unit_name(repo));
-                let state = if on_demand && state != "active" {
-                    "waiting (on demand)".into()
-                } else {
-                    state
-                };
-                lines.push(format!("  {repo:<32} {state}"));
-            }
+/// One runner's service, as `systemctl is-active` names it.
+struct Runner {
+    repo: String,
+    runner_id: String,
+    service: String,
+}
+
+/// Everything `status` reports, read once and rendered as text or JSON.
+struct Snapshot {
+    meminfo: String,
+    load: Option<Vec<String>>,
+    disk_free: Option<u64>,
+    holders: Option<Vec<Holder>>,
+    on_demand: bool,
+    dock: Option<String>,
+    /// None when the registry cannot be read, as for a user other than root.
+    runners: Option<Vec<Runner>>,
+}
+
+impl Snapshot {
+    fn read() -> Self {
+        let on_demand = crate::dock::on_demand();
+        let runners = cleanup::inventory(Path::new(paths::REGISTRY))
+            .ok()
+            .map(|inventory| {
+                inventory
+                    .runners
+                    .iter()
+                    .map(|runner| Runner {
+                        repo: runner.entry.repo.clone(),
+                        runner_id: runner.entry.runner_id.clone(),
+                        service: service_state(&unit_name(&runner.entry.repo)),
+                    })
+                    .collect()
+            });
+        Self {
+            meminfo: fs::read_to_string("/proc/meminfo").unwrap_or_default(),
+            load: fs::read_to_string("/proc/loadavg")
+                .ok()
+                .map(|load| load.split_whitespace().take(3).map(str::to_owned).collect()),
+            disk_free: free_disk(Path::new("/")).ok(),
+            holders: lock_holders(Path::new(paths::STATE_ROOT)),
+            on_demand,
+            dock: on_demand.then(|| service_state(crate::dock::DOCK_UNIT)),
+            runners,
         }
-        Err(_) => lines.push("Runners: run with sudo to list them".into()),
     }
-    lines.join("\n")
+
+    fn text(&self) -> String {
+        let mut lines = vec![render_memory(&self.meminfo)];
+        if let Some(load) = &self.load {
+            lines.push(format!("Load:    {} (1, 5, 15 min)", load.join(" ")));
+        }
+        if let Some(free) = self.disk_free {
+            lines.push(format!("Disk:    {} GiB free on /", free / (1024 * MIB)));
+        }
+        lines.push(render_lock(self.holders.as_deref()));
+        lines.push(match &self.dock {
+            Some(dock) => format!("Mode:    on demand (dock {dock})"),
+            None => "Mode:    always on".into(),
+        });
+        match &self.runners {
+            Some(runners) if runners.is_empty() => lines.push("Runners: none connected".into()),
+            Some(runners) => {
+                lines.push("Runners:".into());
+                for runner in runners {
+                    let state = if self.on_demand && runner.service != "active" {
+                        "waiting (on demand)"
+                    } else {
+                        &runner.service
+                    };
+                    lines.push(format!("  {:<32} {state}", runner.repo));
+                }
+            }
+            None => lines.push("Runners: run with sudo to list them".into()),
+        }
+        lines.join("\n")
+    }
+
+    /// The machine-readable form the desktop app reads over SSH. `format`
+    /// changes only when a field is removed or changes meaning.
+    fn json(&self) -> Value {
+        let mib = |key| meminfo_bytes(&self.meminfo, key) / MIB;
+        let swap_total = mib("SwapTotal");
+        let holder_repo = |holder: &Holder| {
+            self.runners
+                .iter()
+                .flatten()
+                .find(|runner| runner.runner_id == holder.runner_id)
+                .map(|runner| runner.repo.clone())
+        };
+        serde_json::json!({
+            "format": 1,
+            "version": env!("CARGO_PKG_VERSION"),
+            "memory": (mib("MemTotal") > 0).then(|| serde_json::json!({
+                "total_mib": mib("MemTotal"),
+                "available_mib": mib("MemAvailable"),
+                "swap_total_mib": swap_total,
+                "swap_used_mib": swap_total.saturating_sub(mib("SwapFree")),
+            })),
+            "load": self.load,
+            "disk_free_gib": self.disk_free.map(|free| free / (1024 * MIB)),
+            "mode": if self.on_demand { "on-demand" } else { "always-on" },
+            "dock": self.dock,
+            "lock": self.holders.as_ref().map(|holders| holders.iter().map(|holder| serde_json::json!({
+                "runner_id": holder.runner_id,
+                "repo": holder_repo(holder),
+                "seconds": holder.seconds,
+            })).collect::<Vec<_>>()),
+            "runners": self.runners.as_ref().map(|runners| runners.iter().map(|runner| serde_json::json!({
+                "repo": runner.repo,
+                "service": runner.service,
+                "waiting": self.on_demand && runner.service != "active",
+            })).collect::<Vec<_>>()),
+        })
+    }
+}
+
+/// Print the snapshot as JSON, for the desktop app.
+pub fn status_json() -> Result<()> {
+    println!("{}", Snapshot::read().json());
+    Ok(())
+}
+
+fn snapshot() -> String {
+    Snapshot::read().text()
 }
 
 /// Print a snapshot, or refresh it every `watch` seconds until interrupted.
@@ -245,6 +331,57 @@ mod tests {
             assert!(render_lock(None).contains("run with sudo"));
         }
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn json_names_the_repository_holding_the_lock() {
+        let snapshot = Snapshot {
+            meminfo:
+                "MemTotal: 973824 kB\nMemAvailable: 347136 kB\nSwapTotal: 3145724 kB\nSwapFree: 1906684 kB\n"
+                    .into(),
+            load: Some(vec!["0.10".into(), "0.20".into(), "0.30".into()]),
+            disk_free: Some(35 * 1024 * MIB),
+            holders: Some(vec![Holder {
+                runner_id: "vantalter-portfolio".into(),
+                pid: 42,
+                seconds: 90,
+            }]),
+            on_demand: true,
+            dock: Some("active".into()),
+            runners: Some(vec![
+                Runner {
+                    repo: "vantalter/portfolio".into(),
+                    runner_id: "vantalter-portfolio".into(),
+                    service: "active".into(),
+                },
+                Runner {
+                    repo: "vantalter/site".into(),
+                    runner_id: "vantalter-site".into(),
+                    service: "inactive".into(),
+                },
+            ]),
+        };
+        let json = snapshot.json();
+        assert_eq!(json["format"], 1);
+        assert_eq!(json["memory"]["total_mib"], 951);
+        assert_eq!(json["memory"]["swap_used_mib"], 1210);
+        assert_eq!(json["mode"], "on-demand");
+        assert_eq!(json["lock"][0]["repo"], "vantalter/portfolio");
+        assert_eq!(json["lock"][0]["seconds"], 90);
+        assert_eq!(json["runners"][1]["waiting"], true);
+        assert!(
+            snapshot
+                .text()
+                .contains("vantalter/site                   waiting (on demand)")
+        );
+
+        let unprivileged = Snapshot {
+            holders: None,
+            runners: None,
+            ..snapshot
+        };
+        let json = unprivileged.json();
+        assert!(json["lock"].is_null() && json["runners"].is_null());
     }
 
     #[test]

@@ -1,10 +1,23 @@
-[package]
-name = "runberth"
-version = "0.1.0"
+[workspace]
+# The server CLI is the root package; `cargo build` and `cargo test` at the
+# root build only it, so the VPS build needs no desktop libraries.
+members = ["app"]
+
+[workspace.package]
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.87"
-description = "Lightweight GitHub Actions runner management for one small Linux host"
 license = "MIT"
+repository = "https://github.com/vantalter/runberth"
+
+[package]
+name = "runberth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Lightweight GitHub Actions runner management for one small Linux host"
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]

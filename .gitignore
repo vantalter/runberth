@@ -4,3 +4,4 @@
 runner/
 _work/
 /target
+/dist

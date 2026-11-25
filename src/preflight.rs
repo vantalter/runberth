@@ -65,7 +65,7 @@ pub fn free_disk(path: &Path) -> Result<u64> {
 }
 
 /// The kernel's machine name, as `uname -m` prints it.
-fn machine() -> Result<String> {
+pub fn machine() -> Result<String> {
     // SAFETY: uname fills a plain-data struct of NUL-terminated fields.
     let mut name: libc::utsname = unsafe { std::mem::zeroed() };
     if unsafe { libc::uname(&mut name) } != 0 {
@@ -90,9 +90,8 @@ pub fn preflight() -> Result<()> {
         bail!("Run this on the Linux VPS");
     }
     let arch = machine()?;
-    if arch != "x86_64" {
-        bail!("Expected x86_64; found {arch}. Review workflow labels and native dependencies");
-    }
+    // Runberth and the GitHub runner exist for x86_64 and arm64.
+    crate::arch::Arch::host()?;
     let (memory, swap) = memory(&fs::read_to_string("/proc/meminfo").unwrap_or_default());
     let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
     let disk = free_disk(Path::new(&home))?;

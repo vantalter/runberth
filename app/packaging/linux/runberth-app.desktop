@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Runberth
+Comment=Runberth server status, jobs, and results in the tray
+Exec=runberth-app
+Icon=runberth-app
+Terminal=false
+Categories=Development;Monitor;

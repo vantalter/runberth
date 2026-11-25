@@ -1,13 +1,13 @@
 # Personal-account runner setup
 
-This procedure is for a dedicated Ubuntu 24.04 or 26.04 x64 VPS. Do not run it on a server that hosts anything else you care about: builds use all of its memory, and runner jobs execute repository code on it.
+This procedure is for a dedicated Ubuntu 24.04 or 26.04 VPS, x64 or arm64. Do not run it on a server that hosts anything else you care about: builds use all of its memory, and runner jobs execute repository code on it.
 
 ## Install Runberth once
 
 1. Write your host config from [`config/host.json`](../config/host.json): set `owner` to your personal GitHub account, `runberth` to a name for this installation such as `YOUR_ACCOUNT/runberth` (each repository's opt-in file repeats it; it need not be a real repository), and choose one runner label.
 Steps 2 to 6 are what `scripts/install-vps.sh` does from your computer over SSH; see the README. To do them by hand:
 
-2. Get the `runberth` binary for Linux x86_64. Runberth is a single static Rust binary, so the VPS needs no compiler or language runtime. Download `runberth-x86_64-unknown-linux-musl` and its `.sha256` file from the [releases](https://github.com/vantalter/runberth/releases), or build it yourself as described in the README. Copy the binary and your host config to a temporary setup directory on the VPS, check the binary with `sha256sum -c runberth-x86_64-unknown-linux-musl.sha256`, rename it to `runberth`, and make it executable.
+2. Get the `runberth` binary for the server's processor. Runberth is a single static Rust binary, so the VPS needs no compiler or language runtime. Download `runberth-x86_64-unknown-linux-musl`, or `runberth-aarch64-unknown-linux-musl` for arm64, and its `.sha256` file from the [releases](https://github.com/vantalter/runberth/releases), or build it yourself as described in the README. Copy the binary and your host config to a temporary setup directory on the VPS, check the binary with `sha256sum -c` and its `.sha256` file, rename it to `runberth`, and make it executable.
 3. From that directory, run `./runberth preflight`; it only reads local system information.
 4. Run `sudo ./runberth install-host --config host.json`. It installs the binary itself to `/opt/runberth/bin/runberth`, the host config, root-owned job hook scripts that call the binary, a group-writable lock file, and an installation registry in `/etc/runberth`. Re-running it with a different host config is refused. To update Runberth later, run the same command with the new binary.
 5. Run `sudo /opt/runberth/bin/runberth add-swap 3` for a Runberth-owned 3 GB swap file if needed. Install only the build dependencies required by the selected workflows, using `sudo /opt/runberth/bin/runberth track-packages apt-get install -y ...` so newly installed packages can be removed later. This can include Git, curl, build tools, and Playwright's Linux browser system dependencies. Both commands refuse to run before step 4. Do not let PR workflow code run `sudo`.
@@ -33,7 +33,7 @@ Runberth has no inbound network port. Runner services poll GitHub over outbound 
    The command reads the committed manifest through the [GitHub repository contents API](https://docs.github.com/en/rest/repos/contents#get-repository-content) and confirms private personal ownership and admin access. A missing, public, or mismatched repository is rejected before server changes. It then creates the repository's dedicated runner account and state directory, and installs its runner:
 
    - installs any missing runner runtime libraries (ICU, Kerberos, LTTng, OpenSSL, zlib) through package tracking, choosing each release's package names the way the runner's own dependency script does,, so cleanup can remove them;
-   - downloads the latest official Linux x64 [runner release](https://github.com/actions/runner/releases) and checks it against the SHA-256 GitHub publishes for it;
+   - downloads the latest official Linux [runner release](https://github.com/actions/runner/releases) for the server's processor, x64 or arm64, and checks it against the SHA-256 GitHub publishes for it;
    - registers it as `runberth-REPO` with the host config's label, using a one-hour [registration token](https://docs.github.com/en/rest/actions/self-hosted-runners#create-a-registration-token-for-a-repository) that is passed to `config.sh` through its environment and never saved;
    - adds both job hooks, its private state directory, and the shared lock file to the runner's `.env`, running as the runner's own account;
    - writes and starts its systemd unit, `actions.runner.vantalter-REPO.runberth-REPO.service`.
@@ -50,7 +50,7 @@ Two kinds of process escape both the runner's orphan cleanup and this check: a p
 
 ## Update workflows and verify
 
-Keep each repository's existing PR, `main`, manual, and tag triggers and check names. Route eligible Linux jobs to `runs-on: [self-hosted, linux, x64, runberth-ci]`; use the label in its manifest. See [moving workflows](workflows.md) for timeouts, memory settings, and jobs that need separate handling.
+Keep each repository's existing PR, `main`, manual, and tag triggers and check names. Route eligible Linux jobs to `runs-on: [self-hosted, linux, x64, runberth-ci]`, or `arm64` in place of `x64` on an arm64 server; use the label in its manifest. See [moving workflows](workflows.md) for timeouts, memory settings, and jobs that need separate handling.
 
 Run `cargo test` in Runberth. After VPS setup, queue jobs in two private repositories and confirm that the second waits in `Set up runner` until the first finishes. Check service logs, memory, swap, disk, and cold-build duration. Every runner on this VPS must have both hooks configured; a runner without them bypasses serialization.
 

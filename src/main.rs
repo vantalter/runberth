@@ -31,8 +31,10 @@ Host commands (on the VPS):
                                 show, then (root) remove, everything Runberth recorded
 
 Monitoring commands (on the VPS; sudo shows the lock and runners):
-  status [--watch [SECONDS]]    memory, swap, load, disk, lock holder, and runner
-                                services; --watch refreshes every SECONDS (default 2)
+  status [--watch [SECONDS] | --json]
+                                memory, swap, load, disk, lock holder, and runner
+                                services; --watch refreshes every SECONDS (default 2),
+                                --json prints them for the desktop app
   logs OWNER/REPO [--follow] [--lines N]
                                 (root) lock helper notes and the runner service journal
 
@@ -130,6 +132,7 @@ fn dispatch(args: &[&str]) -> Result<Option<i32>> {
         }
         ["cleanup", flags @ ..] => run_cleanup(flags)?,
         ["status"] => status::status(None)?,
+        ["status", "--json"] => status::status_json()?,
         ["status", "--watch"] => status::status(Some(2))?,
         ["logs", repo, flags @ ..] => run_logs(repo, flags)?,
         ["broker-probe", repo] => probe::probe(repo, 600)?,
