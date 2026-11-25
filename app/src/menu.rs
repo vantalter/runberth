@@ -452,7 +452,8 @@ mod tests {
     fn status(lock: Vec<Holder>) -> Status {
         Status {
             format: 1,
-            version: "0.2.0".into(),
+            // The app's own version, so a version bump keeps it current.
+            version: env!("CARGO_PKG_VERSION").into(),
             memory: Some(crate::server::Memory {
                 total_mib: 951,
                 available_mib: 615,
@@ -512,7 +513,10 @@ mod tests {
         assert_eq!(menu["tooltip"], "Runberth — the latest runs passed");
         assert_eq!(menu["badge"], "");
         let top = labels(&menu["items"]);
-        assert_eq!(top[0], "ubuntu@192.0.2.1 · Runberth 0.2.0");
+        assert_eq!(
+            top[0],
+            format!("ubuntu@192.0.2.1 · Runberth {}", env!("CARGO_PKG_VERSION"))
+        );
         assert_eq!(top[1], "Memory 336 of 951 MiB · swap 100 MiB");
         assert_eq!(top[2], "On demand · idle");
         assert_eq!(top[4], "✓ r — CI passed · 5m ago");

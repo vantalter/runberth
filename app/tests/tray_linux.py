@@ -7,6 +7,7 @@ Requires python3-gi, only for this test.
 import http.server
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -117,8 +118,10 @@ settings.write_text(json.dumps({
     "github_token_command": "echo test-token",
     "interval_seconds": 5,
 }))
+# The app's own version, so the fake server is never out of date.
+VERSION = re.search(r'^version = "(.+)"', (Path(__file__).parents[2] / "Cargo.toml").read_text(), re.M)[1]
 status = {
-    "format": 1, "version": "0.2.0",
+    "format": 1, "version": VERSION,
     "memory": {"total_mib": 951, "available_mib": 615, "swap_total_mib": 3071, "swap_used_mib": 100},
     "mode": "on-demand", "dock": "active",
     "lock": [{"runner_id": "o-r", "repo": "o/r", "seconds": 30}],
@@ -196,7 +199,7 @@ try:
     if owner:
         shown = [label.strip() for label in labels(menu(owner))]
         print("\n".join(shown))
-        check("ubuntu@vps.example · Runberth 0.2.0" in shown, "the server line")
+        check(f"ubuntu@vps.example · Runberth {VERSION}" in shown, "the server line")
         check("On demand · busy with r" in shown, "the lock holder")
         check("Edit Settings…" in shown, "settings open as a file on Linux")
         check("Report a Problem…" in shown, "the bug report item")
