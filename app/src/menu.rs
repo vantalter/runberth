@@ -25,9 +25,6 @@ pub enum Action {
     Logs(String),
     /// Run `runberth update` in a terminal, where sudo can ask for a password.
     UpdateServer,
-    /// Choose the install's options, then run `runberth install` in a
-    /// terminal.
-    InstallServer,
     /// Open GitHub's bug report form, prefilled.
     Report,
     Quit,
@@ -341,7 +338,9 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
                 "Runberth not installed"
             };
             items.push(builder.info(format!("{name} — {state}")));
-            items.push(builder.item("Install Runberth on Server…", Action::InstallServer));
+            // Installing asks for options: Settings has them, and Linux,
+            // without a Settings window, has the command.
+            items.push(builder.info(INSTALL_HINT));
         }
         (Some(name), Some(Err(error))) => {
             items.push(builder.info(format!("{name} — unreachable")));
@@ -425,6 +424,13 @@ fn short_line(text: &str) -> String {
     let cut: String = text.chars().take(MAX - 1).collect();
     format!("{cut}…")
 }
+
+/// Where to install Runberth on a server without it.
+const INSTALL_HINT: &str = if SETTINGS_WINDOW {
+    "Install it in Settings > Server"
+} else {
+    "Install it with runberth install"
+};
 
 /// Whether this platform has a Settings window for the app's options.
 const SETTINGS_WINDOW: bool = cfg!(target_os = "macos");
@@ -798,15 +804,11 @@ mod tests {
         let (menu, actions) = build(&removed);
         assert_eq!(
             labels(&menu["items"])[0..2],
-            [
-                "ubuntu@192.0.2.1 — Runberth removed",
-                "Install Runberth on Server…"
-            ]
+            ["ubuntu@192.0.2.1 — Runberth removed", INSTALL_HINT]
         );
-        let id = find(&menu["items"], "Install Runberth on Server…")["id"]
-            .as_u64()
-            .unwrap() as u32;
-        assert_eq!(actions[&id], Action::InstallServer);
+        // A hint, not an action.
+        assert_eq!(menu["items"][1]["enabled"], false);
+        assert!(!actions.values().any(|action| *action == Action::UpdateServer));
         assert_eq!(menu["icon"], "offline");
         assert_eq!(menu["tooltip"], "Runberth — removed from the server");
         assert_eq!(labels(&menu["items"])[2..4], ["---", "Refresh Now"]);
@@ -819,11 +821,7 @@ mod tests {
         let (menu, _) = build(&fresh);
         assert_eq!(
             labels(&menu["items"])[0..3],
-            [
-                "ubuntu@192.0.2.1 — Runberth not installed",
-                "Install Runberth on Server…",
-                "---"
-            ]
+            ["ubuntu@192.0.2.1 — Runberth not installed", INSTALL_HINT, "---"]
         );
         assert_eq!(menu["tooltip"], "Runberth — not installed on the server");
     }

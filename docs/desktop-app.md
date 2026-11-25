@@ -113,7 +113,7 @@ runberth cleanup
 
 `install` sets up Runberth on the server in the settings, as `scripts/install-vps.sh` does from a checkout: it installs the release that matches the app's version, checked against its published SHA-256, with the host config for your GitHub token's account (or `--owner NAME`) and the label `runberth-ci` (or `--label`). It also installs the sudoers rule the app needs; `--swap`, `--packages`, and `--on-demand` add the same extras as the script. `update` installs the app's version over an existing installation and keeps its host config, restarting the on-demand dock if it runs. Both allocate a terminal, so `sudo` can ask for a password; `runberth install --help` lists the options. When the server's Runberth is older than the app, or lacks the sudoers rule, the menu offers **Update Server…**, which runs `runberth update` in a terminal window.
 
-When the server answers but has no Runberth, as a new server or one just cleaned up, the menu says so and offers **Install Runberth on Server…**. On macOS it opens the same choice in Settings > Server, where **Install Runberth…** sits beside Test Connection: the swap size, on-demand runners, and any apt packages your builds need. **Install in Terminal** then runs `runberth install` with those options in Terminal, where sudo can ask for the server's password. On Linux the menu item shows the default command, `runberth install --swap 3 --on-demand`, in a terminal and runs it when you press Return. Clean Up… is disabled while the server has no Runberth, and Install Runberth… while it has one.
+When the server answers but has no Runberth, as a new server or one just cleaned up, the menu says so. On macOS, **Install Runberth…** in Settings > Server, beside Test Connection, asks for the swap size, on-demand runners, and any apt packages your builds need, then **Install in Terminal** runs `runberth install` with those options in Terminal, where sudo can ask for the server's password. On Linux, run `runberth install` yourself. Clean Up… is disabled while the server has no Runberth, and Install Runberth… while it has one.
 
 `runberth cleanup` shows what the [cleanup](cleanup.md) would remove from the server; `runberth cleanup --execute` removes it, deleting each runner's GitHub registration with the piped or stored token. In the macOS app, **Clean Up Server…** in Settings > Server shows the same plan and removes everything only after you choose **Remove Everything**. Change the repositories' `runs-on` first.
 
@@ -122,7 +122,7 @@ When the server answers but has no Runberth, as a new server or one just cleaned
 ## Troubleshooting
 
 - **"too old for this app"** or **"needs Runberth's sudoers rule":** choose **Update Server…** in the menu, or run `runberth update`.
-- **"Runberth not installed":** choose **Install Runberth on Server…** in the menu, or run `runberth install`.
+- **"Runberth not installed":** choose **Install Runberth…** in Settings > Server on macOS, or run `runberth install`.
 - **No notifications on macOS:** allow them for Runberth in System Settings > Notifications.
 - **No icon on Linux:** the desktop needs a StatusNotifier tray, such as KDE's, or GNOME's AppIndicator extension. The app prints a message when it finds none.
 

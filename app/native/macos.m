@@ -714,11 +714,6 @@ static NSString *shellQuoted(NSString *path) {
     [self refreshUpdates];
     [self status:state];
     emit(@"token-check", @"");
-    // Install Runberth on Server… in the menu opens the options here.
-    if ([state[@"install"] boolValue]) {
-        ((NSTabViewController *)self.window.contentViewController).selectedTabViewItemIndex = 0;
-        [self installRunberth:nil];
-    }
     [NSApp activateIgnoringOtherApps:YES];
     [self.window makeKeyAndOrderFront:nil];
     // Since macOS 14 an app cannot always activate itself; show the window anyway.

@@ -113,8 +113,7 @@ fn perform(action: Action) {
         Action::CheckUpdates => wake(Wake::CheckUpdates),
         Action::Connect(repo) => start_operation("connect", repo),
         Action::Logs(repo) => show_logs(repo),
-        Action::UpdateServer => run_in_terminal(&["update"], false),
-        Action::InstallServer => install_server(),
+        Action::UpdateServer => run_in_terminal(&["update"]),
         Action::Report => report_problem(),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
@@ -169,7 +168,7 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
         "install-server" => match install_arguments(&value) {
-            Ok(args) => run_in_terminal(&args, false),
+            Ok(args) => run_in_terminal(&args),
             Err(error) => native::settings_status(&json!({"install_error": error}).to_string()),
         },
         "cleanup-preview" => in_background(|| {
@@ -381,9 +380,8 @@ fn run_on_server(remote: &[&str], token: bool) -> Result<Vec<u8>, String> {
 /// Runs `runberth COMMAND` in a terminal window, where sudo can ask for a
 /// password and the output stays readable.
 /// Runs `runberth ARGS...` in a terminal window, where sudo can ask for a
-/// password and the output stays readable; with `confirm`, it first shows
-/// the command and waits for Return.
-fn run_in_terminal<S: AsRef<str>>(args: &[S], confirm: bool) {
+/// password and the output stays readable.
+fn run_in_terminal<S: AsRef<str>>(args: &[S]) {
     let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
     let Ok(executable) = std::env::current_exe() else {
         return;
@@ -391,17 +389,8 @@ fn run_in_terminal<S: AsRef<str>>(args: &[S], confirm: bool) {
     let shown: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     let quoted: Vec<String> = shown.iter().map(|arg| quote(arg)).collect();
     let command = shown.first().copied().unwrap_or("runberth");
-    let ask = if confirm {
-        let prompt = format!(
-            "This runs: runberth {}. Press Return to go on, or close the window to cancel.",
-            shown.join(" ")
-        );
-        format!("echo {}; read _; ", quote(&prompt))
-    } else {
-        String::new()
-    };
     let line = format!(
-        "{ask}{} {}; echo; echo 'Press Return to close this window.'; read _",
+        "{} {}; echo; echo 'Press Return to close this window.'; read _",
         quote(&executable.display().to_string()),
         quoted.join(" ")
     );
@@ -477,11 +466,6 @@ fn show_logs(repo: String) {
 
 /// Opens the Settings window with the settings file's current values.
 fn show_settings() {
-    show_settings_with(false);
-}
-
-/// Opens Settings, with the install options sheet when `install` is set.
-fn show_settings_with(install: bool) {
     // Linux keeps to the settings file, so the app needs no GUI toolkit.
     if cfg!(target_os = "linux") {
         open_settings_file();
@@ -501,27 +485,9 @@ fn show_settings_with(install: bool) {
         "path": path.display().to_string(),
         "error": error,
         "installed": INSTALLED.load(Ordering::Relaxed),
-        "install": install,
     });
     native::show_settings(&window.to_string());
 }
-
-/// The defaults the install options start from: on demand, as a small
-/// server needs, and swap for its builds.
-const INSTALL_DEFAULTS: &[&str] = &["install", "--swap", "3", "--on-demand"];
-
-/// Install Runberth on the server: on macOS, Settings asks for the options
-/// first; Linux, without a Settings window, shows the defaults in the
-/// terminal before it runs them.
-fn install_server() {
-    if SETTINGS_WINDOW {
-        show_settings_with(true);
-    } else {
-        run_in_terminal(INSTALL_DEFAULTS, true);
-    }
-}
-
-const SETTINGS_WINDOW: bool = cfg!(target_os = "macos");
 
 /// The `runberth install` arguments for the Settings sheet's choices:
 /// {"swap": 0|2|3|4, "on_demand": bool, "packages": "gcc git"}, checked as
@@ -1008,7 +974,5 @@ mod install_tests {
         );
         assert!(install_arguments(r#"{"packages": "rm -rf; x"}"#).is_err());
         assert!(install_arguments("not json").is_err());
-        // The defaults Linux runs are valid options too.
-        assert!(install::parse(INSTALL_DEFAULTS).is_ok());
     }
 }
