@@ -373,7 +373,7 @@ static NSColor *closeButtonRed(void) {
     self.settingsPath.selectable = YES;
     return form(@[
         @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
-        @[ @"Notifications:", column(@[ self.notifications, [self notificationPermission] ]) ],
+        @[ @"Notifications:", [self notificationPermission] ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
         @[ @"Command line:", [self commandLineTool] ],
         NSNull.null,
@@ -498,12 +498,14 @@ static NSColor *closeButtonRed(void) {
 /* The permission macOS gives the app, beside a button to its page in
  * System Settings; both always take their space, so the window keeps its
  * size whatever the permission. */
+/* The choice and the button to macOS's settings on one line, and whether
+ * macOS allows notifications under them. */
 - (NSView *)notificationPermission {
-    self.notificationsStatus = statusLine(220);
-    NSStackView *line = row(@[ self.notificationsStatus,
+    self.notificationsStatus = statusLine(300);
+    NSStackView *line = row(@[ self.notifications,
                                pushButton(@"Notification Settings…", self, @selector(openNotificationSettings:)) ]);
     line.alignment = NSLayoutAttributeCenterY;
-    return line;
+    return column(@[ line, self.notificationsStatus ]);
 }
 - (void)refreshNotificationPermission {
     if (!tray.canNotify) {
