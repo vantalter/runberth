@@ -226,6 +226,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *notificationsStatus;
 /* Whether `runberth` in /usr/local/bin is this app's command. */
 @property NSTextField *commandLineStatus;
+/* Installs the command, or removes the app's link once it is installed. */
+@property NSButton *commandLineButton;
 @property NSButton *cleanupButton;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
@@ -529,54 +531,92 @@ static NSColor *closeButtonRed(void) {
 static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
 
 - (NSView *)commandLineTool {
-    self.commandLineStatus = statusLine(220);
-    NSStackView *line = row(@[ self.commandLineStatus,
-                               pushButton(@"Install Command Line Tool…", self, @selector(installCommandLineTool:)) ]);
-    line.alignment = NSLayoutAttributeCenterY;
-    return line;
+    self.commandLineButton = pushButton(@"Install Command Line Tool…", self, @selector(toggleCommandLineTool:));
+    self.commandLineStatus = statusLine(300);
+    return column(@[ self.commandLineButton, self.commandLineStatus ]);
+}
+/* Whether /usr/local/bin/runberth is this app's link, so removing it is safe. */
+- (BOOL)commandLineToolInstalled {
+    NSString *target = [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL];
+    return [target isEqualToString:NSBundle.mainBundle.executablePath];
 }
 - (void)refreshCommandLineTool {
-    NSString *executable = NSBundle.mainBundle.executablePath;
-    NSString *target = [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL];
-    if ([target isEqualToString:executable])
-        setStatus(self.commandLineStatus, @"Installed as /usr/local/bin/runberth", YES);
-    else if (target || [NSFileManager.defaultManager fileExistsAtPath:CommandLinePath])
-        setStatus(self.commandLineStatus, @"Another runberth is in /usr/local/bin; installing replaces it", YES);
+    BOOL installed = [self commandLineToolInstalled];
+    self.commandLineButton.title = installed ? @"Remove Command Line Tool…" : @"Install Command Line Tool…";
+    NSDictionary *existing = [NSFileManager.defaultManager attributesOfItemAtPath:CommandLinePath error:NULL];
+    if (installed)
+        setStatus(self.commandLineStatus, @"Installed at /usr/local/bin/runberth", YES);
+    else if (existing || [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL])
+        setStatus(self.commandLineStatus,
+                  @"/usr/local/bin/runberth exists; installing replaces it", YES);
     else
-        setStatus(self.commandLineStatus, @"Not installed", YES);
+        setStatus(self.commandLineStatus, @"Adds /usr/local/bin/runberth, linked to this app", YES);
 }
-- (void)installCommandLineTool:(id)sender {
+/* Runs a shell command as an administrator, after macOS asks for the password;
+ * NO if it failed or was cancelled, with the failure shown. */
+- (BOOL)runAsAdministrator:(NSString *)command {
+    NSString *escaped = [[command stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+        stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+    NSString *source = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", escaped];
+    NSDictionary *failure = nil;
+    [[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&failure];
+    // Cancelling the password prompt is not an error worth showing.
+    if (failure && [failure[NSAppleScriptErrorNumber] integerValue] != -128)
+        setStatus(self.commandLineStatus, failure[NSAppleScriptErrorMessage] ?: @"The command failed", NO);
+    return failure == nil;
+}
+/* A path in single quotes for the shell. */
+static NSString *shellQuoted(NSString *path) {
+    return [NSString stringWithFormat:@"'%@'", [path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+}
+- (void)toggleCommandLineTool:(id)sender {
+    if ([self commandLineToolInstalled])
+        [self removeCommandLineTool];
+    else
+        [self installCommandLineTool];
+}
+- (void)installCommandLineTool {
     NSString *executable = NSBundle.mainBundle.executablePath;
     NSFileManager *files = NSFileManager.defaultManager;
-    BOOL writable = [files isWritableFileAtPath:@"/usr/local/bin"];
     NSDictionary *existing = [files attributesOfItemAtPath:CommandLinePath error:NULL];
     BOOL replaceable = !existing || [existing[NSFileType] isEqualToString:NSFileTypeSymbolicLink];
-    NSError *error = nil;
-    if (writable && replaceable) {
+    if ([files isWritableFileAtPath:@"/usr/local/bin"] && replaceable) {
+        NSError *error = nil;
         [files removeItemAtPath:CommandLinePath error:NULL];
-        if (![files createSymbolicLinkAtPath:CommandLinePath withDestinationPath:executable error:&error])
+        if (![files createSymbolicLinkAtPath:CommandLinePath withDestinationPath:executable error:&error]) {
             setStatus(self.commandLineStatus, error.localizedDescription, NO);
-    } else {
-        // macOS asks for an administrator's password for /usr/local/bin.
-        NSString *(^quoted)(NSString *) = ^NSString *(NSString *value) {
-          NSString *escaped = [[value stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
-              stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-          return [NSString stringWithFormat:@"quoted form of \"%@\"", escaped];
-        };
-        NSString *source = [NSString
-            stringWithFormat:@"do shell script \"mkdir -p /usr/local/bin && ln -sf \" & %@ & \" \" & %@ "
-                             @"with administrator privileges",
-                             quoted(executable), quoted(CommandLinePath)];
-        NSDictionary *failure = nil;
-        [[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&failure];
-        // Cancelling the password prompt is not an error worth showing.
-        if (failure && [failure[NSAppleScriptErrorNumber] integerValue] != -128)
-            setStatus(self.commandLineStatus, failure[NSAppleScriptErrorMessage] ?: @"Cannot install", NO);
-        if (failure)
             return;
+        }
+    } else if (![self runAsAdministrator:[NSString stringWithFormat:@"mkdir -p /usr/local/bin && ln -sf %@ %@",
+                                                                     shellQuoted(executable),
+                                                                     shellQuoted(CommandLinePath)]]) {
+        return;
     }
-    if (!error)
-        [self refreshCommandLineTool];
+    [self refreshCommandLineTool];
+}
+/* Removes only the app's own link; a copy installed another way stays. */
+- (void)removeCommandLineTool {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Remove the runberth command?";
+    alert.informativeText = @"This removes /usr/local/bin/runberth. The app keeps working, and you can install "
+                            @"the command again here at any time.";
+    [alert addButtonWithTitle:@"Remove"];
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+                    if (response != NSAlertFirstButtonReturn || ![self commandLineToolInstalled])
+                        return;
+                    NSError *error = nil;
+                    if ([NSFileManager.defaultManager isWritableFileAtPath:@"/usr/local/bin"]) {
+                        if (![NSFileManager.defaultManager removeItemAtPath:CommandLinePath error:&error]) {
+                            setStatus(self.commandLineStatus, error.localizedDescription, NO);
+                            return;
+                        }
+                    } else if (![self runAsAdministrator:[@"rm -f " stringByAppendingString:shellQuoted(CommandLinePath)]]) {
+                        return;
+                    }
+                    [self refreshCommandLineTool];
+                  }];
 }
 - (void)openNotificationSettings:(id)sender {
     NSString *page = [@"x-apple.systempreferences:com.apple.Notifications-Settings.extension?id="

@@ -86,7 +86,7 @@ The `runberth` command runs Runberth's commands on the server in the app's setti
 curl -fsSL https://github.com/vantalter/runberth/releases/latest/download/install.sh | sh
 ```
 
-The installer picks the build for your system, checks its SHA-256, and installs it as `/usr/local/bin/runberth`, using sudo only when that folder is not writable; set `RUNBERTH_INSTALL_DIR` for another folder, or `RUNBERTH_VERSION=v0.2.0` for a release other than the latest. In the macOS app, **Install Command Line Tool…** in Settings > General links the app's own binary there instead, and the Linux packages install it as `/usr/bin/runberth`.
+The installer picks the build for your system, checks its SHA-256, and installs it as `/usr/local/bin/runberth`, using sudo only when that folder is not writable; set `RUNBERTH_INSTALL_DIR` for another folder, or `RUNBERTH_VERSION=v0.2.0` for a release other than the latest. In the macOS app, **Install Command Line Tool…** in Settings > General links the app's own binary there instead, so the command updates with the app; once it is installed, the same button removes that link. The Linux packages install it as `/usr/bin/runberth`, and removing the package removes it. To remove a copy the installer put there, delete the file: `sudo rm /usr/local/bin/runberth`, or the `runberth` file in your `RUNBERTH_INSTALL_DIR`. Your settings and stored token stay; the app's settings and the Keychain or Secret Service item hold them.
 
 Without the app, `runberth config` writes the settings the app would use, and shows them when run alone:
 
