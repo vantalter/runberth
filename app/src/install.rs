@@ -14,7 +14,16 @@ use sha2::{Digest, Sha256};
 use crate::config::{self, Server};
 use crate::server;
 
-const ASSET: &str = "runberth-x86_64-unknown-linux-musl";
+/// The release binary for a server's processor, from its `uname -m`.
+fn asset(machine: &str) -> Result<&'static str, String> {
+    match machine.trim() {
+        "x86_64" | "amd64" => Ok("runberth-x86_64-unknown-linux-musl"),
+        "aarch64" | "arm64" => Ok("runberth-aarch64-unknown-linux-musl"),
+        other => Err(format!(
+            "Runberth runs on x86_64 or arm64 Linux; the server is {other}"
+        )),
+    }
+}
 const RELEASES: &str = "https://github.com/vantalter/runberth/releases/download";
 /// The repository whose manifests name this host, as in config/host.json.
 const RUNBERTH_REPOSITORY: &str = "vantalter/runberth";
@@ -294,7 +303,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The server binary: a local file, or the release, checked either way.
-fn binary(options: &Options) -> Result<Vec<u8>, String> {
+fn binary(options: &Options, asset: &str) -> Result<Vec<u8>, String> {
     if let Some(path) = &options.binary {
         let bytes =
             std::fs::read(path).map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
@@ -317,11 +326,11 @@ fn binary(options: &Options) -> Result<Vec<u8>, String> {
         .version
         .clone()
         .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
-    println!("Downloading Runberth {tag}");
+    println!("Downloading Runberth {tag} ({asset})");
     let base = format!("{RELEASES}/{tag}");
-    let checksum = String::from_utf8_lossy(&download(&format!("{base}/{ASSET}.sha256"))?).into_owned();
+    let checksum = String::from_utf8_lossy(&download(&format!("{base}/{asset}.sha256"))?).into_owned();
     let expected = expected_digest(&checksum).ok_or("Unreadable checksum in the release")?;
-    let bytes = download(&format!("{base}/{ASSET}"))?;
+    let bytes = download(&format!("{base}/{asset}"))?;
     if sha256(&bytes) != expected {
         return Err("Checksum mismatch for the downloaded release".into());
     }
@@ -364,7 +373,49 @@ pub fn run(options: &Options) -> Result<(), String> {
         )
     })?;
     let user = account(server);
-    let bytes = binary(options)?;
+    let socket = server::socket_dir();
+    let mut options_ssh = server::options(server, socket.as_deref());
+    // BatchMode stays on: keys only. The host key must be known unless trusted now.
+    options_ssh.extend([
+        "-o".into(),
+        format!(
+            "StrictHostKeyChecking={}",
+            if options.accept_new_host_key {
+                "accept-new"
+            } else {
+                "yes"
+            }
+        ),
+    ]);
+    let host = server.host.trim();
+    let target = format!("{}@{host}", server.user);
+    let scp_target = if host.contains(':') {
+        format!("{}@[{host}]", server.user)
+    } else {
+        target.clone()
+    };
+
+    // The server's processor picks the release binary.
+    let machine = if server.is_local() {
+        Command::new("uname").arg("-m").output()
+    } else {
+        Command::new(server::ssh_program())
+            .args(&options_ssh)
+            .args(["-p", &server.port.to_string(), &target, "uname -m"])
+            .stdin(Stdio::null())
+            .output()
+    }
+    .map_err(|error| format!("Cannot run ssh: {error}"))?;
+    if !machine.status.success() {
+        let host = server.host.trim();
+        return Err(server::failure(
+            host,
+            "install",
+            machine.status.code(),
+            &String::from_utf8_lossy(&machine.stderr),
+        ));
+    }
+    let bytes = binary(options, asset(&String::from_utf8_lossy(&machine.stdout))?)?;
     let explicit = options.owner.is_some() || options.label.is_some();
     let new_config = if options.update {
         None
@@ -394,28 +445,6 @@ pub fn run(options: &Options) -> Result<(), String> {
         std::mem::forget(cleanup);
         return status_error("The installation", status);
     }
-
-    let socket = server::socket_dir();
-    let mut options_ssh = server::options(server, socket.as_deref());
-    // BatchMode stays on: keys only. The host key must be known unless trusted now.
-    options_ssh.extend([
-        "-o".into(),
-        format!(
-            "StrictHostKeyChecking={}",
-            if options.accept_new_host_key {
-                "accept-new"
-            } else {
-                "yes"
-            }
-        ),
-    ]);
-    let host = server.host.trim();
-    let target = format!("{}@{host}", server.user);
-    let scp_target = if host.contains(':') {
-        format!("{}@[{host}]", server.user)
-    } else {
-        target.clone()
-    };
 
     let output = Command::new(server::ssh_program())
         .args(&options_ssh)
@@ -557,6 +586,13 @@ mod tests {
         let repository =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/host.json")).unwrap();
         assert_eq!(host_json("vantalter", "runberth-ci"), repository);
+    }
+
+    #[test]
+    fn the_server_s_processor_picks_the_binary() {
+        assert_eq!(asset("x86_64\n").unwrap(), "runberth-x86_64-unknown-linux-musl");
+        assert_eq!(asset("aarch64").unwrap(), "runberth-aarch64-unknown-linux-musl");
+        assert!(asset("armv7l").unwrap_err().contains("x86_64 or arm64"));
     }
 
     #[test]

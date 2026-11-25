@@ -1,6 +1,7 @@
 //! Runberth: GitHub Actions runners for personal private repositories on one
 //! small Linux host, with jobs serialized across repositories.
 
+pub mod arch;
 pub mod broker;
 pub mod cleanup;
 pub mod connect;

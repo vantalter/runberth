@@ -122,7 +122,7 @@ The app lives in `app/`, a member of the Cargo workspace.
 
 ## Releasing the macOS app
 
-A `v*` tag builds the app with the server binary. The macOS app is signed and notarized when the repository has these Actions secrets, and ad-hoc signed otherwise:
+Each release builds the app with the server binaries; see [Releasing](../README.md#releasing). The macOS app is signed and notarized when the repository has these Actions secrets, and ad-hoc signed otherwise:
 
 - `MACOS_CERTIFICATE` and `MACOS_CERTIFICATE_PASSWORD`: a Developer ID Application certificate as a base64 `.p12` file and its password;
 - `APPLE_API_KEY`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`: an App Store Connect API key for notarization;

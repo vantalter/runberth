@@ -1,11 +1,20 @@
 name: Release
 
-# Push a tag such as v0.2.0, matching the workspace version in Cargo.toml, to
-# publish the static Linux x86_64 server binary, the macOS app with its
-# Sparkle update feed, and the Linux tray app's packages.
+# A tag such as v0.2.0, matching the workspace version in Cargo.toml,
+# publishes the static Linux server binaries for x86_64 and arm64, the macOS
+# app with its Sparkle update feed, and the Linux tray app's packages.
+# tag-release.yml tags and runs this when main's version changes; pushing a
+# tag by hand also runs it. A tag such as v0.2.0-rc.1 publishes a
+# pre-release of the version in Cargo.toml, for testing before the release.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to release, already pushed
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,26 +24,51 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - id: check
         name: Tag matches Cargo.toml
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # v0.2.0 releases 0.2.0; v0.2.0-rc.1 is a pre-release of it.
+          case "$TAG" in
+            "v$version") prerelease=false ;;
+            "v$version"-rc.[0-9]*) prerelease=true ;;
+            *)
+              echo "Tag $TAG does not match Cargo.toml version $version" >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "version=$version"
+            echo "tag=$TAG"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
   server:
     needs: version
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          # Each built natively, on GitHub's runner for that processor.
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
     env:
-      TARGET: x86_64-unknown-linux-musl
-      ASSET: runberth-x86_64-unknown-linux-musl
+      TARGET: ${{ matrix.target }}
+      ASSET: runberth-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: Install the musl toolchain
         run: |
           sudo apt-get update
@@ -52,8 +86,8 @@ jobs:
           cat "$ASSET.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-server
-          path: runberth-x86_64-unknown-linux-musl*
+          name: release-server-${{ matrix.target }}
+          path: runberth-${{ matrix.target }}*
 
   macos:
     needs: version
@@ -61,6 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.version.outputs.tag }}
           # The update feed lists the commits since the previous release tag.
           fetch-depth: 0
       - name: Rust targets
@@ -120,7 +155,13 @@ jobs:
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
+          # The feed names the final release's files; installed apps never
+          # update to a pre-release.
+          if [ "$PRERELEASE" = true ]; then
+            exit 0
+          fi
           if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
             echo "::warning::No SPARKLE_PRIVATE_KEY secret; without appcast.xml the macOS app cannot update itself to this release"
             exit 0
@@ -149,6 +190,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - name: Native dependencies
         run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libjson-glib-dev pkg-config dbus python3-gi
       - run: cargo test -p runberth-app --locked
@@ -192,11 +235,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           cd release-files
           sha256sum * > SHA256SUMS
-          prerelease=""
-          # Only suffixed versions such as 0.3.0-rc.1: the app's update feed is
-          # read from the latest release, which GitHub never sets to a pre-release.
-          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" * $prerelease --generate-notes --title "Runberth $VERSION"
+          # The app's update feed and `latest` downloads read the latest
+          # release, which GitHub never sets to a pre-release.
+          if [ "$PRERELEASE" = true ]; then
+            gh release create "$TAG" * --prerelease --generate-notes --title "Runberth $TAG"
+          else
+            gh release create "$TAG" * --generate-notes --title "Runberth $VERSION"
+          fi

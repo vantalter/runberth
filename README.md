@@ -18,7 +18,7 @@ Runberth is a single static Rust binary with no runtime dependencies, and it add
 
 ## Get started
 
-The current target is **Ubuntu 24.04 or 26.04 x64 with systemd and cgroup v2**, for trusted private repositories owned by one personal GitHub account. The host commands checked by preflight must be available; no compiler or language runtime is needed. The server needs outbound access to GitHub and your build dependencies; no inbound CI port is required.
+The current target is **Ubuntu 24.04 or 26.04, x64 or arm64, with systemd and cgroup v2**, for trusted private repositories owned by one personal GitHub account. The host commands checked by preflight must be available; no compiler or language runtime is needed. The server needs outbound access to GitHub and your build dependencies; no inbound CI port is required.
 
 ### 1. Set up the host
 
@@ -69,7 +69,7 @@ Set eligible Linux jobs to use the configured label:
 runs-on: [self-hosted, linux, x64, runberth-ci]
 ```
 
-Keep existing triggers and check names. Independent jobs remain independent checks; the shared lock makes their workflow steps execute sequentially on the server. GitHub's runner may prepare or download actions before it runs the job-start hook, so that preparation can overlap across runners. A waiting job's runner worker also stays in memory while it waits, so count one idle worker per queued job alongside the running build. Waiting for the lock happens inside the job, so allow time for both the queue and the build in `timeout-minutes`.
+On an arm64 server, such as an Ampere or Graviton instance, use `arm64` in place of `x64`: GitHub labels each runner with its processor. Keep existing triggers and check names. Independent jobs remain independent checks; the shared lock makes their workflow steps execute sequentially on the server. GitHub's runner may prepare or download actions before it runs the job-start hook, so that preparation can overlap across runners. A waiting job's runner worker also stays in memory while it waits, so count one idle worker per queued job alongside the running build. Waiting for the lock happens inside the job, so allow time for both the queue and the build in `timeout-minutes`.
 
 ### 4. Watch the host
 
@@ -128,7 +128,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-The job lock and cleanup tests drive the real binary, and the Linux-only cgroup test runs on Linux. To build the static release binary on a Linux x86_64 machine:
+The job lock and cleanup tests drive the real binary, and the Linux-only cgroup test runs on Linux. To build the static release binary on a Linux x86_64 machine (on arm64, use `aarch64-unknown-linux-musl`):
 
 ```sh
 sudo apt-get install musl-tools
@@ -137,6 +137,10 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 The binary is `target/x86_64-unknown-linux-musl/release/runberth`. Run `runberth` without arguments to list its commands.
+
+### Releasing
+
+Bump `version` under `[workspace.package]` in `Cargo.toml` and merge that change to `main`. The `Tag release` workflow tags the new version and runs the release, which publishes the server binaries for x86_64 and arm64, the macOS app, and the Linux tray app's packages. To test a build before releasing it, push a release candidate tag for the version in `Cargo.toml`, such as `git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1`: it is published as a pre-release, which `latest` downloads and the app's updates skip, and the desktop app's update command installs it on a server with `--version v0.2.0-rc.1`. See [Releasing the macOS app](docs/desktop-app.md#releasing-the-macos-app) for its signing secrets.
 
 The desktop app is the workspace member `app/`; `cargo test -p runberth-app` tests it. See [Build from source](docs/desktop-app.md#build-from-source) for its native dependencies and the macOS app bundle.
 

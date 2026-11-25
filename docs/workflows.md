@@ -10,6 +10,8 @@ Point eligible Linux jobs at the runner with the label from your host config:
 runs-on: [self-hosted, linux, x64, runberth-ci]
 ```
 
+On an arm64 server, such as an Ampere or Graviton instance, use `arm64` in place of `x64`: GitHub labels each runner with its processor.
+
 Each runner executes one job at a time, and Runberth's job hooks serialize workflow steps **across** the separate runners. The runner can prepare or download actions before the job-start hook takes the lock, so that preparation can overlap on the host, and each queued job keeps its runner worker process in memory while it waits. Measure that alongside the running build when sizing the host. A workflow's `concurrency` setting can still cancel stale runs, but it is not a host-wide queue.
 
 Keep independent jobs independent, so a failure in one does not skip another's check; Runberth runs them one after another.

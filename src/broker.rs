@@ -17,6 +17,7 @@ use ring::rand::SystemRandom;
 use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 use serde_json::{Value, json};
 
+use crate::arch::Arch;
 use crate::bail;
 use crate::error::{Context, Error, Result};
 use crate::registry::read_record;
@@ -167,6 +168,7 @@ pub struct Message {
 pub struct Broker {
     identity: Identity,
     runner_version: String,
+    arch: Arch,
     agent: ureq::Agent,
     token: String,
 }
@@ -177,11 +179,14 @@ fn body_text(response: ureq::Response) -> String {
 
 impl Broker {
     pub fn connect(identity: Identity, runner_version: String) -> Result<Self> {
+        // The runner's own platform, as it would announce itself.
+        let arch = Arch::host()?;
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
             .timeout_read(LONG_POLL)
             .user_agent(&format!(
-                "GitHubActionsRunner-linux-x64/{runner_version} runberth"
+                "GitHubActionsRunner-linux-{}/{runner_version} runberth",
+                arch.runner()
             ))
             .build();
         let assertion = identity.assertion(unix_now())?;
@@ -204,6 +209,7 @@ impl Broker {
         Ok(Broker {
             identity,
             runner_version,
+            arch,
             agent,
             token,
         })
@@ -256,7 +262,7 @@ impl Broker {
             .query("status", "Online")
             .query("runnerVersion", &self.runner_version)
             .query("os", "Linux")
-            .query("architecture", "X64")
+            .query("architecture", self.arch.broker())
             .query(
                 "disableUpdate",
                 if self.identity.disable_update {
