@@ -63,6 +63,8 @@ Commit this file as `.github/runberth.json` on the project's default branch. Its
 }
 ```
 
+`runberth init`, run in the project's checkout, writes it with the server's own values, and prints the `runs-on` line for its jobs. A server installed before `runberth init` existed does not report them: pass `--runberth YOUR_ACCOUNT/runberth --label runberth-ci`, or update it first.
+
 From your computer, with GitHub CLI authenticated:
 
 ```sh

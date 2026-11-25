@@ -160,7 +160,7 @@ impl GitHub {
             .unwrap_or_else(|| "main".into());
         Err(MissingManifest {
             message: format!(
-                "{repo} has no {MANIFEST} on its default branch; commit it there, then connect again"
+                "{repo} has no {MANIFEST} on its default branch; write it with runberth init in its checkout, commit it there, then connect again"
             ),
             page: format!("https://github.com/{repo}/new/{branch}?filename={MANIFEST}"),
         })

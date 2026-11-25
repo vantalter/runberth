@@ -45,6 +45,21 @@ pub struct Status {
     /// None when the account cannot read the lock, as without sudo.
     pub lock: Option<Vec<Holder>>,
     pub runners: Option<Vec<Runner>>,
+    /// The installation's host config; None from servers older than
+    /// `runberth init`, and before installation.
+    #[serde(default)]
+    pub host: Option<Host>,
+    /// "x64" or "arm64", as GitHub labels the server's runners.
+    #[serde(default)]
+    pub arch: Option<String>,
+}
+
+/// The values each repository's `.github/runberth.json` must repeat.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct Host {
+    pub owner: String,
+    pub runberth: String,
+    pub runner_label: String,
 }
 
 impl Status {

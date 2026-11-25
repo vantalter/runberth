@@ -5,12 +5,14 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, github, install, report, server, settings, token};
+use crate::{config, github, init, install, report, server, settings, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
 Runs Runberth commands on the server named in the desktop app's settings.
 
+  init [--print]                write .github/runberth.json in this repository,
+                                with the server's values; see init --help
   connect OWNER/REPO            register and start a repository's runner
   disconnect OWNER/REPO [--github-removed]
                                 remove a repository's runner
@@ -45,6 +47,7 @@ fn repository(argument: &str) -> bool {
 enum Parsed<'a> {
     Run(Vec<&'a str>, bool),
     Install(install::Options),
+    Init(init::Options),
     Config(Vec<&'a str>),
     Report,
     Print(String, i32),
@@ -180,6 +183,11 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         )),
         ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
         ["config", "--help" | "-h"] => Some(Parsed::Print(CONFIG_USAGE.to_owned(), 0)),
+        ["init", "--help" | "-h"] => Some(Parsed::Print(init::USAGE.to_owned(), 0)),
+        ["init", options @ ..] => match init::parse(options) {
+            Ok(options) => Some(Parsed::Init(options)),
+            Err(error) => Some(Parsed::Print(error, 2)),
+        },
         ["report"] => Some(Parsed::Report),
         ["config", options @ ..] => Some(Parsed::Config(options.to_vec())),
         ["install" | "update", ..] => match install::parse(&args) {
@@ -209,6 +217,13 @@ pub fn run(args: &[String]) -> Option<i32> {
         }
         Parsed::Report => Some(report_problem()),
         Parsed::Config(options) => Some(configure(&options).map_or_else(
+            |error| {
+                eprintln!("runberth: {error}");
+                1
+            },
+            |()| 0,
+        )),
+        Parsed::Init(options) => Some(init::run(&options).map_or_else(
             |error| {
                 eprintln!("runberth: {error}");
                 1
@@ -293,6 +308,7 @@ mod tests {
             }
             Some(Parsed::Config(options)) => Some((vec![format!("config {}", options.join(" "))], false)),
             Some(Parsed::Report) => Some((vec!["report".into()], false)),
+            Some(Parsed::Init(_)) => Some((vec!["init".into()], false)),
             None => None,
         }
     }
@@ -308,6 +324,9 @@ mod tests {
         assert!(!parsed("status --watch 5").unwrap().1);
         assert!(!parsed("logs o/r --follow").unwrap().1);
         assert_eq!(parsed("update").unwrap().0, ["install update=true"]);
+        assert_eq!(parsed("init --print").unwrap().0, ["init"]);
+        assert_eq!(parsed("init --help").unwrap().0, ["print 0"]);
+        assert_eq!(parsed("init --label").unwrap().0, ["print 2"]);
         assert_eq!(parsed("config --host h").unwrap().0, ["config --host h"]);
         assert_eq!(parsed("config --help").unwrap().0, ["print 0"]);
         assert_eq!(parsed("cleanup").unwrap(), (vec!["cleanup".into()], false));
