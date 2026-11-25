@@ -2,6 +2,7 @@
 //! opt-in file `connect` requires, with the values of the server in the
 //! settings, so they always match its host config.
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -14,7 +15,8 @@ the values of the server in the settings. Commit it to the default branch,
 then run `runberth connect OWNER/REPO`.
 
   --print               print the file instead of writing it
-  --force               replace a different .github/runberth.json
+  --force               replace a different .github/runberth.json without
+                        asking; in a terminal, init asks first
   --runberth NAME       the host config's runberth, as in OWNER/runberth,
                         with --label, instead of asking the server
   --label LABEL         the host config's runner_label";
@@ -143,6 +145,72 @@ fn values(options: &Options) -> Result<Values, String> {
     })
 }
 
+/// How an existing file differs from the one to write, one line per value;
+/// empty when it already has the same values, in whatever layout.
+fn changes(existing: &str, runberth: &str, label: &str) -> Vec<String> {
+    let Ok(old) = serde_json::from_str::<serde_json::Value>(existing) else {
+        return vec!["  it is not valid JSON".into()];
+    };
+    let mut lines = Vec::new();
+    for (key, new) in [
+        ("version", serde_json::json!(1)),
+        ("runberth", serde_json::json!(runberth)),
+        ("runner_label", serde_json::json!(label)),
+    ] {
+        if old[key] != new {
+            let shown = |value: &serde_json::Value| {
+                if value.is_null() {
+                    "(missing)".to_owned()
+                } else {
+                    value.to_string()
+                }
+            };
+            lines.push(format!("  {key}: {} -> {}", shown(&old[key]), shown(&new)));
+        }
+    }
+    if let Some(fields) = old.as_object() {
+        for extra in fields
+            .keys()
+            .filter(|key| !["version", "runberth", "runner_label"].contains(&key.as_str()))
+        {
+            lines.push(format!("  {extra}: removed"));
+        }
+    }
+    lines
+}
+
+/// Whether an answer to "Replace it? [y/N]" is yes; anything else, even an
+/// empty line, keeps the file.
+fn accepts(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Asks before replacing a file with other values. Without a terminal to
+/// ask in, as in a script, it refuses and names --force.
+fn confirm_replace(file: &Path, changes: &[String]) -> Result<bool, String> {
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(format!(
+            "{} exists with other values; --force replaces it:\n{}",
+            file.display(),
+            changes.join("\n")
+        ));
+    }
+    println!(
+        "{} exists with other values:\n{}",
+        file.display(),
+        changes.join("\n")
+    );
+    print!("Replace it? [y/N] ");
+    std::io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut answer = String::new();
+    stdin
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|error| error.to_string())?;
+    Ok(accepts(&answer))
+}
+
 /// What to say after writing the file.
 fn next_steps(repo: Option<&str>, values: &Values) -> String {
     let mut lines = vec![format!(
@@ -185,19 +253,16 @@ pub fn run(options: &Options) -> Result<(), String> {
         .ok_or("Not in a Git repository: run it in the repository to connect, or use --print")?;
     let repo = git(&top, &["remote", "get-url", "origin"]).and_then(|remote| repository(&remote));
     let file = top.join(MANIFEST);
-    match std::fs::read_to_string(&file) {
-        Ok(existing) if existing == text => {
+    if let Ok(existing) = std::fs::read_to_string(&file) {
+        let changes = changes(&existing, &values.runberth, &values.label);
+        if changes.is_empty() {
             println!("{} is already up to date", file.display());
             println!("{}", next_steps(repo.as_deref(), &values));
             return Ok(());
         }
-        Ok(_) if !options.force => {
-            return Err(format!(
-                "{} exists with other values; --force replaces it",
-                file.display()
-            ));
+        if !options.force && !confirm_replace(&file, &changes)? {
+            return Err(format!("Kept {}", file.display()));
         }
-        _ => {}
     }
     std::fs::create_dir_all(top.join(".github"))
         .map_err(|error| format!("Cannot create .github: {error}"))?;
@@ -228,6 +293,35 @@ mod tests {
         // The host config itself parses it.
         let host: serde_json::Value = serde_json::from_str(&manifest("a/\"b", "c")).unwrap();
         assert_eq!(host["runberth"], "a/\"b");
+    }
+
+    #[test]
+    fn an_existing_file_is_compared_by_its_values() {
+        let same = r#"{"runner_label": "ci", "runberth": "o/runberth", "version": 1}"#;
+        assert!(changes(same, "o/runberth", "ci").is_empty());
+        assert_eq!(
+            changes(&manifest("o/runberth", "old"), "o/runberth", "ci"),
+            ["  runner_label: \"old\" -> \"ci\""]
+        );
+        assert_eq!(
+            changes(
+                r#"{"version": 1, "runberth": "o/runberth", "extra": true}"#,
+                "o/runberth",
+                "ci"
+            ),
+            ["  runner_label: (missing) -> \"ci\"", "  extra: removed"]
+        );
+        assert_eq!(changes("{", "o/runberth", "ci"), ["  it is not valid JSON"]);
+    }
+
+    #[test]
+    fn only_yes_replaces() {
+        for yes in ["y", "Y", "yes", " YES\n"] {
+            assert!(accepts(yes), "{yes:?}");
+        }
+        for no in ["", "\n", "n", "no", "yep", "sure"] {
+            assert!(!accepts(no), "{no:?}");
+        }
     }
 
     #[test]
