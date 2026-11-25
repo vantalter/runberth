@@ -3,18 +3,12 @@ name: Release
 # A tag such as v0.2.0, matching the workspace version in Cargo.toml,
 # publishes the static Linux server binaries for x86_64 and arm64, the macOS
 # app with its Sparkle update feed, and the Linux tray app's packages.
-# tag-release.yml tags and runs this when main's version changes; pushing a
-# tag by hand also runs it. A tag such as v0.2.0-rc.1 publishes a
-# pre-release of the version in Cargo.toml, for testing before the release.
+# Releases are manual: push the tag by hand, as in README.md#releasing. A tag
+# such as v0.2.0-rc.1 publishes a pre-release of the version in Cargo.toml,
+# for testing before the release.
 on:
   push:
     tags: ["v*"]
-  workflow_call:
-    inputs:
-      tag:
-        description: The tag to release, already pushed
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -28,12 +22,10 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
       - id: check
         name: Tag matches Cargo.toml
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           # v0.2.0 releases 0.2.0; v0.2.0-rc.1 is a pre-release of it.

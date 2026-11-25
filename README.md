@@ -154,7 +154,14 @@ The binary is `target/x86_64-unknown-linux-musl/release/runberth`. Run `runberth
 
 ### Releasing
 
-Bump `version` under `[workspace.package]` in `Cargo.toml` and merge that change to `main`. The `Tag release` workflow tags the new version and runs the release, which publishes the server binaries for x86_64 and arm64, the macOS app, and the Linux tray app's packages. To test a build before releasing it, push a release candidate tag for the version in `Cargo.toml`, such as `git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1`: it is published as a pre-release, which `latest` downloads and the app's updates skip, and the desktop app's update command installs it on a server with `--version v0.2.0-rc.1`. See [Releasing the macOS app](docs/desktop-app.md#releasing-the-macos-app) for its signing secrets.
+Releases are manual. Bump `version` under `[workspace.package]` in `Cargo.toml`, merge that change to `main`, then tag the merge and push the tag:
+
+```sh
+git switch main && git pull
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+The tag must match the version in `Cargo.toml`. Pushing it runs the release, which publishes the server binaries for x86_64 and arm64, the `runberth` command and its installer, the macOS app, and the Linux tray app's packages. Merging to `main` alone releases nothing. To test a build first, push a release candidate tag for the version in `Cargo.toml`, such as `git tag v0.3.0-rc.1 && git push origin v0.3.0-rc.1`: it is published as a pre-release, which the `latest` downloads, `install.sh`, and the app's updates all skip, and `runberth update --version v0.3.0-rc.1` installs it on a server. See [Releasing the macOS app](docs/desktop-app.md#releasing-the-macos-app) for its signing secrets.
 
 The desktop app is the workspace member `app/`; `cargo test -p runberth-app` tests it alone, and `cargo build -p runberth-app --no-default-features` builds the `runberth` command without the tray. See [Build from source](docs/desktop-app.md#build-from-source) for the macOS app bundle.
 
