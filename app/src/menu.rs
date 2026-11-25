@@ -463,6 +463,8 @@ mod tests {
             dock: Some("active".into()),
             lock: Some(lock),
             runners: None,
+            host: None,
+            arch: None,
         }
     }
 

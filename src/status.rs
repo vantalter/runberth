@@ -9,9 +9,11 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
+use crate::arch::Arch;
 use crate::cleanup;
 use crate::error::Result;
 use crate::gate::alive;
+use crate::host::HostConfig;
 use crate::names::unit_name;
 use crate::paths;
 use crate::preflight::{free_disk, meminfo_bytes};
@@ -135,6 +137,11 @@ struct Snapshot {
     dock: Option<String>,
     /// None when the registry cannot be read, as for a user other than root.
     runners: Option<Vec<Runner>>,
+    /// The installation's host config, which each repository's opt-in file
+    /// repeats; None before installation.
+    host: Option<HostConfig>,
+    /// The processor, which GitHub adds to the runners' labels.
+    arch: Option<Arch>,
 }
 
 impl Snapshot {
@@ -163,6 +170,8 @@ impl Snapshot {
             on_demand,
             dock: on_demand.then(|| service_state(crate::dock::DOCK_UNIT)),
             runners,
+            host: HostConfig::load(Path::new(paths::HOST_CONFIG)).ok(),
+            arch: Arch::host().ok(),
         }
     }
 
@@ -232,6 +241,13 @@ impl Snapshot {
                 "service": runner.service,
                 "waiting": self.on_demand && runner.service != "active",
             })).collect::<Vec<_>>()),
+            // For `runberth init`, which writes a repository's opt-in file.
+            "host": self.host.as_ref().map(|host| serde_json::json!({
+                "owner": host.owner,
+                "runberth": host.runberth,
+                "runner_label": host.runner_label,
+            })),
+            "arch": self.arch.map(Arch::runner),
         })
     }
 }
@@ -360,6 +376,13 @@ mod tests {
                     service: "inactive".into(),
                 },
             ]),
+            host: Some(
+                HostConfig::parse(
+                    r#"{"version": 1, "owner": "vantalter", "runberth": "vantalter/runberth", "runner_label": "runberth-ci"}"#,
+                )
+                .unwrap(),
+            ),
+            arch: Some(Arch::Arm64),
         };
         let json = snapshot.json();
         assert_eq!(json["format"], 1);
@@ -369,6 +392,11 @@ mod tests {
         assert_eq!(json["lock"][0]["repo"], "vantalter/portfolio");
         assert_eq!(json["lock"][0]["seconds"], 90);
         assert_eq!(json["runners"][1]["waiting"], true);
+        assert_eq!(
+            json["host"],
+            serde_json::json!({"owner": "vantalter", "runberth": "vantalter/runberth", "runner_label": "runberth-ci"})
+        );
+        assert_eq!(json["arch"], "arm64");
         assert!(
             snapshot
                 .text()
@@ -378,10 +406,11 @@ mod tests {
         let unprivileged = Snapshot {
             holders: None,
             runners: None,
+            host: None,
             ..snapshot
         };
         let json = unprivileged.json();
-        assert!(json["lock"].is_null() && json["runners"].is_null());
+        assert!(json["lock"].is_null() && json["runners"].is_null() && json["host"].is_null());
     }
 
     #[test]

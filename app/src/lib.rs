@@ -7,6 +7,7 @@
 mod cli;
 mod config;
 mod github;
+mod init;
 mod install;
 mod report;
 mod server;
