@@ -1,6 +1,7 @@
 //! Connect one private repository: verify its opt-in, create its runner
-//! account, then register and start its runner. Safe to re-run; an existing
-//! registration is kept.
+//! account, install the packages its manifest asks for, then register and
+//! start its runner. Safe to re-run; an existing registration is kept. And
+//! sync: apply a connected repository's changed manifest.
 
 use std::path::Path;
 
@@ -8,6 +9,7 @@ use crate::bail;
 use crate::error::Result;
 use crate::github::GitHub;
 use crate::host::HostConfig;
+use crate::packages;
 use crate::paths;
 use crate::registry::Registry;
 use crate::runner;
@@ -27,7 +29,7 @@ pub fn connect(repo: &str) -> Result<()> {
     let token = system::read_token()?;
     let host = HostConfig::load(config)?;
     let api = GitHub::new(token);
-    verify(repo, &host, &api)?;
+    let opt_in = verify(repo, &host, &api)?;
     println!("Verified private opt-in: {repo} -> {}", host.runberth);
 
     let registry = Registry::host();
@@ -58,5 +60,33 @@ pub fn connect(repo: &str) -> Result<()> {
         state_dir.display()
     );
 
+    // Before the runner starts, so its first job finds them.
+    packages::request(&registry, repo, &opt_in.packages)?.print(repo);
+    registry.set_manifest(repo, Some(&opt_in.sha))?;
+
     runner::install(&entry, &account, &host, &api, &registry)
+}
+
+/// Re-reads a connected repository's manifest and applies what changed:
+/// packages it now asks for are installed, and those it no longer needs are
+/// removed once no other requester needs them.
+pub fn sync(repo: &str) -> Result<()> {
+    system::require_root("/opt/runberth/bin/runberth sync OWNER/REPO < github-token")?;
+    system::require_installed()?;
+    if !crate::names::valid_repo(repo) {
+        bail!("Usage: runberth sync OWNER/REPO");
+    }
+    let registry = Registry::host();
+    let record = registry
+        .runners_dir()
+        .join(format!("{}.json", crate::names::runner_id(repo)));
+    if !record.is_file() {
+        bail!("{repo} is not connected; connect it with `runberth connect {repo}`");
+    }
+    let token = system::read_token()?;
+    let host = HostConfig::load(Path::new(paths::HOST_CONFIG))?;
+    let opt_in = verify(repo, &host, &GitHub::new(token))?;
+    packages::request(&registry, repo, &opt_in.packages)?.print(repo);
+    registry.set_manifest(repo, Some(&opt_in.sha))?;
+    Ok(())
 }

@@ -10,11 +10,11 @@ Steps 2 to 6 are what `scripts/install-vps.sh` does from your computer over SSH;
 2. Get the `runberth` binary for the server's processor. Runberth is a single static Rust binary, so the VPS needs no compiler or language runtime. Download `runberth-x86_64-unknown-linux-musl`, or `runberth-aarch64-unknown-linux-musl` for arm64, and its `.sha256` file from the [releases](https://github.com/vantalter/runberth/releases), or build it yourself as described in the README. Copy the binary and your host config to a temporary setup directory on the VPS, check the binary with `sha256sum -c` and its `.sha256` file, rename it to `runberth`, and make it executable.
 3. From that directory, run `./runberth preflight`; it only reads local system information.
 4. Run `sudo ./runberth install-host --config host.json`. It installs the binary itself to `/opt/runberth/bin/runberth`, the host config, root-owned job hook scripts that call the binary, a group-writable lock file, and an installation registry in `/etc/runberth`. Re-running it with a different host config is refused. To update Runberth later, run the same command with the new binary.
-5. Run `sudo /opt/runberth/bin/runberth add-swap 3` for a Runberth-owned 3 GB swap file if needed. Install only the build dependencies required by the selected workflows, using `sudo /opt/runberth/bin/runberth track-packages apt-get install -y ...` so newly installed packages can be removed later. This can include Git, curl, build tools, and Playwright's Linux browser system dependencies. Both commands refuse to run before step 4. Do not let PR workflow code run `sudo`.
+5. Run `sudo /opt/runberth/bin/runberth add-swap 3` for a Runberth-owned 3 GB swap file if needed. `install-host` installs what every runner needs, `git`, `curl`, `unzip`, and `ca-certificates`; each repository lists its own build dependencies in its manifest, and connecting installs them. For anything the host needs beyond that, use `sudo /opt/runberth/bin/runberth add-packages NAME...`, which records the packages so cleanup removes them. Both commands refuse to run before step 4. Do not let PR workflow code run `sudo`.
 6. The commands below stream a GitHub token over SSH into `sudo -n`, which cannot prompt for a password. Give the admin account a `sudoers` rule, edited with `visudo`, that allows only the two token-reading commands without a password:
 
    ```
-   ADMIN ALL=(root) NOPASSWD: /opt/runberth/bin/runberth connect *, /opt/runberth/bin/runberth disconnect *, /opt/runberth/bin/runberth cleanup, /opt/runberth/bin/runberth cleanup *, /opt/runberth/bin/runberth status, /opt/runberth/bin/runberth status *, /opt/runberth/bin/runberth logs *
+   ADMIN ALL=(root) NOPASSWD: /opt/runberth/bin/runberth connect *, /opt/runberth/bin/runberth sync *, /opt/runberth/bin/runberth disconnect *, /opt/runberth/bin/runberth cleanup, /opt/runberth/bin/runberth cleanup *, /opt/runberth/bin/runberth status, /opt/runberth/bin/runberth status *, /opt/runberth/bin/runberth logs *
    ```
 
    `cleanup *` and `status *` match only with arguments, so the bare forms are listed separately. `status` and `logs` only read. Naming the subcommands keeps the rule from granting the binary's other root commands, or general root access.
@@ -23,7 +23,7 @@ Runberth has no inbound network port. Runner services poll GitHub over outbound 
 
 ## Opt in each private repository
 
-1. Commit `.github/runberth.json` to the repository's default branch, using the [example manifest](../examples/repository/.github/runberth.json). Its `runberth` and `runner_label` must match the host config. Add the manifest only to private projects that have suitable Linux Actions jobs. The manifest contains no token, VPS address, or deployment secret.
+1. Commit `.github/runberth.json` to the repository's default branch, using the [example manifest](../examples/repository/.github/runberth.json). Its `runberth` and `runner_label` must match the host config. List the apt packages its workflows need, such as build tools or Playwright's Linux browser system dependencies, as `"packages": [...]`; connecting installs them, and `runberth sync OWNER/REPO` applies a later change to the default branch's file. Add the manifest only to private projects that have suitable Linux Actions jobs. The manifest contains no token, VPS address, or deployment secret.
 2. Use an admin-capable GitHub token for that private repository. From a trusted computer with `gh` authenticated, send it once to the VPS without saving it there:
 
    ```sh

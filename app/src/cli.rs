@@ -14,6 +14,8 @@ Runs Runberth commands on the server named in the desktop app's settings.
   init [--print]                write .github/runberth.json in this repository,
                                 with the server's values; see init --help
   connect OWNER/REPO            register and start a repository's runner
+  sync OWNER/REPO               apply a repository's changed .github/runberth.json:
+                                install the packages it now needs, remove the rest
   disconnect OWNER/REPO [--github-removed]
                                 remove a repository's runner
   status [--watch [SECONDS]]    the server's memory, lock holder, and runners
@@ -30,7 +32,7 @@ Runs Runberth commands on the server named in the desktop app's settings.
   update                        install this app's version on the server
   --version                     this app's version
 
-connect, disconnect, and cleanup --execute need an admin-capable GitHub token. They read it from
+connect, sync, disconnect, and cleanup --execute need an admin-capable GitHub token. They read it from
 stdin when piped, as in `gh auth token | runberth connect OWNER/REPO`, and
 otherwise use the token stored for the app.";
 
@@ -174,6 +176,7 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         // `--settings`, and the arguments macOS adds when launching an app.
         [first, ..] if first.starts_with('-') => None,
         ["connect", repo] if repository(repo) => Some(Parsed::Run(args, true)),
+        ["sync", repo] if repository(repo) => Some(Parsed::Run(args, true)),
         ["disconnect", repo] if repository(repo) => Some(Parsed::Run(args, true)),
         ["disconnect", repo, "--github-removed"] if repository(repo) => Some(Parsed::Run(args, false)),
         ["status"] | ["status", "--watch"] | ["status", "--watch", _] => Some(Parsed::Run(args, false)),

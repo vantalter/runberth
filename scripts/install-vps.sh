@@ -150,7 +150,7 @@ sudo_cmd=""
 # `cleanup *` needs at least one argument, so the dry run is listed too.
 # status and logs only read; status with no arguments is listed separately.
 sudoers_rule="$user ALL=(root) NOPASSWD: /opt/runberth/bin/runberth connect *, \
-/opt/runberth/bin/runberth disconnect *, \
+/opt/runberth/bin/runberth sync *, /opt/runberth/bin/runberth disconnect *, \
 /opt/runberth/bin/runberth cleanup, /opt/runberth/bin/runberth cleanup *, \
 /opt/runberth/bin/runberth status, /opt/runberth/bin/runberth status *, \
 /opt/runberth/bin/runberth logs *"
@@ -175,9 +175,8 @@ if [[ -n "$swap" ]]; then
 fi
 if [[ -n "$packages" ]]; then
   read -ra package_list <<<"$packages"
-  $sudo_cmd apt-get update -qq
-  $sudo_cmd /opt/runberth/bin/runberth track-packages \
-    apt-get install -y --no-install-recommends "${package_list[@]}"
+  # The host's own packages, beyond the base ones and what repositories list.
+  $sudo_cmd /opt/runberth/bin/runberth add-packages "${package_list[@]}"
 fi
 if [[ "$on_demand" == true ]]; then
   $sudo_cmd /opt/runberth/bin/runberth on-demand on

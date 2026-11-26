@@ -198,8 +198,9 @@ pub fn package_names(list: &str) -> Result<Vec<String>, String> {
 pub fn sudoers_rule(user: &str) -> String {
     let command = |rest: &str| format!("{} {rest}", server::RUNBERTH);
     format!(
-        "{user} ALL=(root) NOPASSWD: {}, {}, {}, {}, {}, {}, {}",
+        "{user} ALL=(root) NOPASSWD: {}, {}, {}, {}, {}, {}, {}, {}",
         command("connect *"),
+        command("sync *"),
         command("disconnect *"),
         server::RUNBERTH.to_owned() + " cleanup",
         command("cleanup *"),
@@ -269,9 +270,8 @@ if [[ -n "$swap" ]]; then
 fi
 if [[ -n "$packages" ]]; then
   read -ra package_list <<<"$packages"
-  $sudo_cmd apt-get update -qq
-  $sudo_cmd /opt/runberth/bin/runberth track-packages \
-    apt-get install -y --no-install-recommends "${package_list[@]}"
+  # The host's own packages, beyond the base ones and what repositories list.
+  $sudo_cmd /opt/runberth/bin/runberth add-packages "${package_list[@]}"
 fi
 if [[ "$on_demand" == true ]]; then
   $sudo_cmd /opt/runberth/bin/runberth on-demand on

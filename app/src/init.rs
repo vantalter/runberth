@@ -63,13 +63,29 @@ pub fn parse(args: &[&str]) -> Result<Options, String> {
     Ok(options)
 }
 
-/// The file, in the layout the README shows.
-fn manifest(runberth: &str, label: &str) -> String {
+/// The file, in the layout the README shows, with the apt packages its
+/// workflows need when there is a list to write.
+fn manifest(runberth: &str, label: &str, packages: Option<&[String]>) -> String {
     let quote = |value: &str| serde_json::Value::from(value).to_string();
+    let packages = packages.map_or_else(String::new, |packages| {
+        let names: Vec<String> = packages.iter().map(|name| quote(name)).collect();
+        format!(",\n  \"packages\": [{}]", names.join(", "))
+    });
     format!(
-        "{{\n  \"version\": 1,\n  \"runberth\": {},\n  \"runner_label\": {}\n}}\n",
+        "{{\n  \"version\": 1,\n  \"runberth\": {},\n  \"runner_label\": {}{packages}\n}}\n",
         quote(runberth),
         quote(label)
+    )
+}
+
+/// The packages an existing file lists, which init keeps.
+fn existing_packages(existing: &str) -> Option<Vec<String>> {
+    let old: serde_json::Value = serde_json::from_str(existing).ok()?;
+    let list = old["packages"].as_array()?;
+    Some(
+        list.iter()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect(),
     )
 }
 
@@ -114,6 +130,9 @@ struct Values {
     arch: Option<String>,
     /// Why the options could not be checked against the server.
     unchecked: Option<String>,
+    /// Whether the server installs the packages a manifest lists; older
+    /// servers refuse a manifest with them.
+    packages: bool,
 }
 
 /// The status of the server in the settings.
@@ -134,9 +153,14 @@ fn server_status() -> Result<server::Status, String> {
 /// it reported its host config or while it is unreachable.
 fn values(options: &Options, status: Result<server::Status, String>) -> Result<Values, String> {
     let given = options.runberth.as_ref().zip(options.label.as_ref());
-    let (host, arch, version) = match status {
-        Ok(status) => (status.host, status.arch, Ok(status.version)),
-        Err(error) => (None, None, Err(error)),
+    let (host, arch, version, packages) = match status {
+        Ok(status) => (
+            status.host,
+            status.arch,
+            Ok(status.version),
+            status.packages.is_some(),
+        ),
+        Err(error) => (None, None, Err(error), false),
     };
     match (host, given) {
         (Some(host), given) => {
@@ -159,6 +183,7 @@ fn values(options: &Options, status: Result<server::Status, String>) -> Result<V
                 owner: Some(host.owner),
                 arch,
                 unchecked: None,
+                packages,
             })
         }
         (None, Some((runberth, label))) => Ok(Values {
@@ -166,6 +191,7 @@ fn values(options: &Options, status: Result<server::Status, String>) -> Result<V
             label: label.clone(),
             owner: None,
             arch,
+            packages,
             unchecked: Some(match &version {
                 Ok(version) => format!("the server's Runberth {version} does not report its host config"),
                 Err(error) => error.clone(),
@@ -207,7 +233,8 @@ fn changes(existing: &str, runberth: &str, label: &str) -> Vec<String> {
     if let Some(fields) = old.as_object() {
         for extra in fields
             .keys()
-            .filter(|key| !["version", "runberth", "runner_label"].contains(&key.as_str()))
+            // The packages stay as they are: init only writes the host's values.
+            .filter(|key| !["version", "runberth", "runner_label", "packages"].contains(&key.as_str()))
         {
             lines.push(format!("  {extra}: removed"));
         }
@@ -281,18 +308,26 @@ pub fn run(options: &Options) -> Result<(), String> {
     if let Some(reason) = &values.unchecked {
         eprintln!("Note: --runberth and --label are not checked against the server: {reason}");
     }
-    let text = manifest(&values.runberth, &values.label);
+    let here = std::env::current_dir().map_err(|error| error.to_string())?;
+    let top = git(&here, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
+    let existing = top
+        .as_ref()
+        .and_then(|top| std::fs::read_to_string(top.join(MANIFEST)).ok());
+    // A list the file has stays; a new file gets an empty one to fill in,
+    // when the server can install what it lists.
+    let packages = existing
+        .as_deref()
+        .and_then(existing_packages)
+        .or_else(|| values.packages.then(Vec::new));
+    let text = manifest(&values.runberth, &values.label, packages.as_deref());
     if options.print {
         print!("{text}");
         return Ok(());
     }
-    let here = std::env::current_dir().map_err(|error| error.to_string())?;
-    let top = git(&here, &["rev-parse", "--show-toplevel"])
-        .map(PathBuf::from)
-        .ok_or("Not in a Git repository: run it in the repository to connect, or use --print")?;
+    let top = top.ok_or("Not in a Git repository: run it in the repository to connect, or use --print")?;
     let repo = git(&top, &["remote", "get-url", "origin"]).and_then(|remote| repository(&remote));
     let file = top.join(MANIFEST);
-    if let Ok(existing) = std::fs::read_to_string(&file) {
+    if let Some(existing) = existing {
         let changes = changes(&existing, &values.runberth, &values.label);
         if changes.is_empty() {
             println!("{} is already up to date", file.display());
@@ -326,11 +361,11 @@ mod tests {
     #[test]
     fn the_file_matches_the_documented_layout() {
         assert_eq!(
-            manifest("vantalter/runberth", "runberth-ci"),
+            manifest("vantalter/runberth", "runberth-ci", None),
             "{\n  \"version\": 1,\n  \"runberth\": \"vantalter/runberth\",\n  \"runner_label\": \"runberth-ci\"\n}\n"
         );
         // The host config itself parses it.
-        let host: serde_json::Value = serde_json::from_str(&manifest("a/\"b", "c")).unwrap();
+        let host: serde_json::Value = serde_json::from_str(&manifest("a/\"b", "c", None)).unwrap();
         assert_eq!(host["runberth"], "a/\"b");
     }
 
@@ -339,7 +374,7 @@ mod tests {
         let same = r#"{"runner_label": "ci", "runberth": "o/runberth", "version": 1}"#;
         assert!(changes(same, "o/runberth", "ci").is_empty());
         assert_eq!(
-            changes(&manifest("o/runberth", "old"), "o/runberth", "ci"),
+            changes(&manifest("o/runberth", "old", None), "o/runberth", "ci"),
             ["  runner_label: \"old\" -> \"ci\""]
         );
         assert_eq!(
@@ -427,6 +462,27 @@ mod tests {
     }
 
     #[test]
+    fn the_packages_list_is_kept_and_offered_where_the_server_installs_it() {
+        let gcc = ["gcc".to_owned()];
+        assert_eq!(
+            manifest("o/runberth", "ci", Some(&gcc)),
+            "{\n  \"version\": 1,\n  \"runberth\": \"o/runberth\",\n  \"runner_label\": \"ci\",\n  \"packages\": [\"gcc\"]\n}\n"
+        );
+        assert!(manifest("o/runberth", "ci", Some(&[])).contains("\"packages\": []"));
+        let existing = manifest("o/runberth", "ci", Some(&gcc));
+        assert_eq!(existing_packages(&existing).unwrap(), gcc);
+        assert_eq!(existing_packages(&manifest("o/runberth", "ci", None)), None);
+        // A file with packages and the host's values is up to date.
+        assert!(changes(&existing, "o/runberth", "ci").is_empty());
+        // The server says whether it installs them.
+        let status = server::Status::parse(
+            r#"{"format": 1, "version": "0.3.0", "mode": "on-demand", "packages": {},
+                "host": {"owner": "o", "runberth": "o/runberth", "runner_label": "ci"}}"#,
+        );
+        assert!(values(&Options::default(), status).unwrap().packages);
+    }
+
+    #[test]
     fn repositories_from_github_remotes() {
         for remote in [
             "https://github.com/vantalter/aerofoil.git",
@@ -468,6 +524,7 @@ mod tests {
             owner: Some("o".into()),
             arch: Some("arm64".into()),
             unchecked: None,
+            packages: true,
         };
         assert_eq!(
             next_steps(Some("o/app"), &values),

@@ -142,6 +142,11 @@ struct Snapshot {
     host: Option<HostConfig>,
     /// The processor, which GitHub adds to the runners' labels.
     arch: Option<Arch>,
+    /// Each repository's manifest SHA when connected or last synced, so the
+    /// app can tell when one changed; None without sudo.
+    manifests: Option<std::collections::BTreeMap<String, String>>,
+    /// The packages Runberth installed on request, and who needs each.
+    requests: Option<crate::registry::Requests>,
 }
 
 impl Snapshot {
@@ -172,6 +177,8 @@ impl Snapshot {
             runners,
             host: HostConfig::load(Path::new(paths::HOST_CONFIG)).ok(),
             arch: Arch::host().ok(),
+            manifests: crate::registry::Registry::host().manifests().ok(),
+            requests: crate::registry::Registry::host().requests().ok(),
         }
     }
 
@@ -240,6 +247,7 @@ impl Snapshot {
                 "repo": runner.repo,
                 "service": runner.service,
                 "waiting": self.on_demand && runner.service != "active",
+                "manifest_sha": self.manifests.as_ref().and_then(|manifests| manifests.get(&runner.repo)),
             })).collect::<Vec<_>>()),
             // For `runberth init`, which writes a repository's opt-in file.
             "host": self.host.as_ref().map(|host| serde_json::json!({
@@ -248,6 +256,7 @@ impl Snapshot {
                 "runner_label": host.runner_label,
             })),
             "arch": self.arch.map(Arch::runner),
+            "packages": self.requests,
         })
     }
 }
@@ -383,6 +392,14 @@ mod tests {
                 .unwrap(),
             ),
             arch: Some(Arch::Arm64),
+            manifests: Some(std::collections::BTreeMap::from([(
+                "vantalter/portfolio".to_owned(),
+                "3f2a".to_owned(),
+            )])),
+            requests: Some(crate::registry::Requests::from([(
+                "gcc".to_owned(),
+                std::collections::BTreeSet::from(["vantalter/portfolio".to_owned()]),
+            )])),
         };
         let json = snapshot.json();
         assert_eq!(json["format"], 1);
@@ -397,6 +414,9 @@ mod tests {
             serde_json::json!({"owner": "vantalter", "runberth": "vantalter/runberth", "runner_label": "runberth-ci"})
         );
         assert_eq!(json["arch"], "arm64");
+        assert_eq!(json["runners"][0]["manifest_sha"], "3f2a");
+        assert!(json["runners"][1]["manifest_sha"].is_null());
+        assert_eq!(json["packages"]["gcc"][0], "vantalter/portfolio");
         assert!(
             snapshot
                 .text()
@@ -407,6 +427,8 @@ mod tests {
             holders: None,
             runners: None,
             host: None,
+            manifests: None,
+            requests: None,
             ..snapshot
         };
         let json = unprivileged.json();

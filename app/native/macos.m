@@ -323,7 +323,6 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
 /* The install options in their sheet. */
 @property NSPopUpButton *installSwap;
 @property NSButton *installOnDemand;
-@property NSTextField *installPackages;
 /* Enabled only when there is a token to save, or a stored one to remove. */
 @property NSButton *saveTokenButton, *removeTokenButton;
 /* A typed token is on its way to the keychain: once it is stored, the field
@@ -904,22 +903,19 @@ static NSString *shellQuoted(NSString *path) {
                                                 target:nil
                                                 action:nil];
     self.installOnDemand.state = NSControlStateValueOn;
-    // actions/checkout needs git for history, tags, and diffs; a server that
-    // has it already keeps it, and cleanup leaves it.
-    self.installPackages = [NSTextField textFieldWithString:@"git"];
-    self.installPackages.placeholderString = @"git gcc";
-    [self.installPackages.widthAnchor constraintEqualToConstant:240].active = YES;
     NSTextField *swapNote = noteLabel();
     swapNote.stringValue = @"Room for builds on a small server.";
     NSTextField *onDemandNote = noteLabel();
     onDemandNote.stringValue = @"Saves about 70 MB per repository; a job waits a few seconds for its runner.";
+    // Build packages come from each repository's .github/runberth.json when
+    // it connects; the install itself adds only what every runner needs.
     NSTextField *packagesNote = noteLabel();
-    packagesNote.stringValue = @"apt packages your builds need, such as gcc for Rust. Add more later with "
-                               @"runberth packages add NAME; cleanup removes them.";
+    packagesNote.stringValue = @"Installs git, curl, unzip, and ca-certificates. Each repository lists the "
+                               @"apt packages its builds need in .github/runberth.json.";
     NSGridView *options = form(@[
         @[ @"Swap:", column(@[ self.installSwap, swapNote ]) ],
         @[ @"Runners:", column(@[ self.installOnDemand, onDemandNote ]) ],
-        @[ @"Packages:", column(@[ self.installPackages, packagesNote ]) ],
+        @[ @"Packages:", packagesNote ],
     ]);
     options.frame = NSMakeRect(0, 0, options.fittingSize.width, options.fittingSize.height);
     alert.accessoryView = options;
@@ -933,7 +929,6 @@ static NSString *shellQuoted(NSString *path) {
                     NSDictionary *choice = @{
                         @"swap" : @(self.installSwap.selectedTag),
                         @"on_demand" : @(self.installOnDemand.state == NSControlStateValueOn),
-                        @"packages" : self.installPackages.stringValue,
                     };
                     NSData *json = [NSJSONSerialization dataWithJSONObject:choice options:0 error:NULL];
                     self.installButton.enabled = NO;

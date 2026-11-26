@@ -11,12 +11,13 @@ use crate::{install, server};
 pub const USAGE: &str = "Usage: runberth packages
        runberth packages add NAME...
 
-Without arguments, lists the apt packages Runberth installed on the server,
-with their dependencies; cleanup removes them.
+Without arguments, lists the apt packages Runberth installed on request on
+the server, and who needs each: the host, or a connected repository.
 
-add installs apt packages your workflows need, such as gcc or git, on the
-server in the settings, and records them for cleanup. It runs with a terminal,
-so sudo can ask for the server's password.";
+A repository's own packages belong in its .github/runberth.json, as
+\"packages\": [\"gcc\"]; connect and sync install them. add installs apt
+packages for the host itself, kept until cleanup. It runs with a terminal, so
+sudo can ask for the server's password.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Request {
@@ -50,19 +51,15 @@ fn recorded(plan: &str) -> Option<Vec<String>> {
     })
 }
 
-/// The commands that install `names` on the server, as `user`: apt's lists
-/// first, so a new server finds every package.
+/// The command that installs `names` for the host, as `user`. The server
+/// refreshes apt's lists and records the packages as the host's.
 fn add_script(names: &[String], user: &str) -> String {
     let sudo = if user == "root" { "" } else { "sudo " };
     let quoted: Vec<String> = names
         .iter()
         .map(|name| format!("'{}'", name.replace('\'', "'\\''")))
         .collect();
-    format!(
-        "set -e; {sudo}apt-get update -qq; {sudo}{} track-packages apt-get install -y --no-install-recommends -- {}",
-        server::RUNBERTH,
-        quoted.join(" ")
-    )
+    format!("{sudo}{} add-packages {}", server::RUNBERTH, quoted.join(" "))
 }
 
 fn settings_server() -> Result<Server, String> {
@@ -87,7 +84,38 @@ pub fn run(command: &Request) -> Result<(), String> {
     }
 }
 
+/// "gcc (vantalter/app, vantalter/site)": a package and who needs it.
+fn requested_lines(packages: &std::collections::BTreeMap<String, Vec<String>>) -> Vec<String> {
+    packages
+        .iter()
+        .map(|(package, requesters)| format!("  {package} ({})", requesters.join(", ")))
+        .collect()
+}
+
 fn list(server: &Server) -> Result<(), String> {
+    // Who needs each package, from servers that record it.
+    if let Ok(server::Status {
+        packages: Some(packages),
+        ..
+    }) = server::fetch(server)
+    {
+        if packages.is_empty() {
+            println!(
+                "Runberth has installed no packages on request on {}.",
+                server.label()
+            );
+        } else {
+            println!(
+                "Packages Runberth installed on {}, and who needs each; each goes when nothing does:\n",
+                server.label()
+            );
+            println!("{}", requested_lines(&packages).join("\n"));
+        }
+        println!(
+            "\nA repository asks for packages in its .github/runberth.json; runberth packages add NAME adds the host's own."
+        );
+        return Ok(());
+    }
     let output = server::command(server, &["cleanup"], false)?
         .stdin(Stdio::null())
         .output()
@@ -162,7 +190,8 @@ fn add(server: &Server, names: &[String]) -> Result<(), String> {
             Ok(())
         }
         Ok(status) => Err(format!(
-            "Installing the packages failed (exit {}); see apt's output above",
+            "Installing the packages failed (exit {}); see the output above. A server that lists \
+             add-packages as unknown needs runberth update first",
             status.code().map_or("signal".into(), |code| code.to_string())
         )),
         Err(error) => Err(format!("Cannot run ssh: {error}")),
@@ -204,14 +233,34 @@ mod tests {
     }
 
     #[test]
-    fn packages_install_tracked_with_sudo_unless_root() {
+    fn packages_are_added_for_the_host_with_sudo_unless_root() {
         let names = ["gcc".to_owned(), "git".to_owned()];
         assert_eq!(
             add_script(&names, "ubuntu"),
-            "set -e; sudo apt-get update -qq; sudo /opt/runberth/bin/runberth track-packages apt-get install -y \
-             --no-install-recommends -- 'gcc' 'git'"
+            "sudo /opt/runberth/bin/runberth add-packages 'gcc' 'git'"
         );
-        assert!(add_script(&names, "root").starts_with("set -e; apt-get update -qq; /opt/runberth"));
+        assert_eq!(
+            add_script(&names, "root"),
+            "/opt/runberth/bin/runberth add-packages 'gcc' 'git'"
+        );
+        // The server's own command accepts them.
+        let server = include_str!("../../src/main.rs");
+        assert!(server.contains(r#"["add-packages", names @ ..]"#));
+    }
+
+    #[test]
+    fn requests_name_who_needs_each_package() {
+        let packages = std::collections::BTreeMap::from([
+            (
+                "gcc".to_owned(),
+                vec!["vantalter/app".to_owned(), "vantalter/site".to_owned()],
+            ),
+            ("jq".to_owned(), vec!["host".to_owned()]),
+        ]);
+        assert_eq!(
+            requested_lines(&packages),
+            ["  gcc (vantalter/app, vantalter/site)", "  jq (host)"]
+        );
     }
 
     #[test]

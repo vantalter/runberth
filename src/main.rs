@@ -26,6 +26,12 @@ Host commands (on the VPS):
   disconnect OWNER/REPO [--github-removed]
                                 (root) unregister and remove one repository's runner;
                                 reads a GitHub token from stdin
+  sync OWNER/REPO               (root) apply a connected repository's changed
+                                .github/runberth.json: install the packages it now
+                                needs, remove those nothing needs; reads a GitHub
+                                token from stdin
+  add-packages NAME...          (root) install apt packages for the host itself,
+                                kept until cleanup
   track-packages COMMAND...     (root) run a package install and record what it added
   cleanup [--execute] [--github-token-stdin | --github-removed]
                                 show, then (root) remove, everything Runberth recorded
@@ -124,6 +130,17 @@ fn dispatch(args: &[&str]) -> Result<Option<i32>> {
         ["add-swap"] => swap::add_swap(None)?,
         ["add-swap", size] => swap::add_swap(Some(size))?,
         ["connect", repo] => connect::connect(repo)?,
+        ["sync", repo] => connect::sync(repo)?,
+        ["add-packages", names @ ..] if !names.is_empty() => {
+            system::require_root("/opt/runberth/bin/runberth add-packages NAME...")?;
+            system::require_installed()?;
+            let registry = Registry::host();
+            let mut wanted = packages::requested_by(&registry, packages::HOST)?;
+            wanted.extend(names.iter().map(|name| (*name).to_owned()));
+            wanted.sort();
+            wanted.dedup();
+            packages::request(&registry, packages::HOST, &wanted)?.print("this host");
+        }
         ["track-packages", command @ ..] => {
             system::require_root("/opt/runberth/bin/runberth track-packages COMMAND [ARGS...]")?;
             system::require_installed()?;
