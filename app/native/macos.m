@@ -496,7 +496,7 @@ static NSString *const StoredTokenMask = @"••••••••••••�
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
         @[ @"Command line:", [self commandLineTool] ],
         NSNull.null,
-        @[ @"Settings file:", column(@[ self.settingsPath, pushButton(@"Open settings.json", self, @selector(openFile:)) ]) ],
+        @[ @"Settings file:", column(@[ pushButton(@"Open settings.json", self, @selector(openFile:)), self.settingsPath ]) ],
     ]);
 }
 - (id)updater {
