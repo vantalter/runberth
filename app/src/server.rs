@@ -226,7 +226,7 @@ pub fn fetch(server: &Server) -> Result<Status, String> {
 
 /// Whether the server has Runberth's binary, asked without sudo, which a
 /// missing sudoers rule would refuse; None when the answer is unclear.
-fn installed(server: &Server) -> Option<bool> {
+pub fn installed(server: &Server) -> Option<bool> {
     if server.is_local() {
         return Some(Path::new(RUNBERTH).exists());
     }

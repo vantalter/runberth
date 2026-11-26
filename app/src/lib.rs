@@ -9,6 +9,7 @@ mod config;
 mod github;
 mod init;
 mod install;
+mod packages;
 mod report;
 mod server;
 mod settings;
