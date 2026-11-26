@@ -687,9 +687,13 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
             meter.doubleValue = ([progress[0] doubleValue] - 1 + 0.5) / [progress[1] doubleValue];
         if (index + 1 == self.barLabels.count)
             self.meterActivity = [progress isKindOfClass:NSArray.class] ? running[@"id"] : nil;
+        // The spinner only while there is no bar to say it: before the
+        // first step, or for work that has none. Its slot stays, so the
+        // text does not move.
         NSProgressIndicator *spinner = self.barSpinners[index];
-        spinner.hidden = !spinning;
-        if (spinning)
+        BOOL turning = spinning && !measured;
+        spinner.hidden = !turning;
+        if (turning)
             [spinner startAnimation:nil];
         else
             [spinner stopAnimation:nil];
