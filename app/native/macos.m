@@ -20,6 +20,45 @@ static void emit(NSString *kind, NSString *value) {
 - (void)checkForUpdates:(id)sender;
 @end
 
+/* A chat bubble's shape: a rounded body with a tail on top whose tip is at
+ * `tip`, filled with the window background, so it reads on any wallpaper,
+ * light or dark, with a hairline edge. */
+@interface BubbleView : NSView
+@property CGFloat tail, tailWidth, radius, tip;
+@end
+
+@implementation BubbleView
+- (NSBezierPath *)shape {
+    NSRect bounds = self.bounds;
+    CGFloat top = NSHeight(bounds) - self.tail;
+    NSBezierPath *path =
+        [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0.5, 0.5, NSWidth(bounds) - 1, top - 1)
+                                        xRadius:self.radius
+                                        yRadius:self.radius];
+    NSBezierPath *pointer = [NSBezierPath bezierPath];
+    [pointer moveToPoint:NSMakePoint(self.tip - self.tailWidth / 2, top - 1)];
+    [pointer lineToPoint:NSMakePoint(self.tip, NSHeight(bounds) - 0.5)];
+    [pointer lineToPoint:NSMakePoint(self.tip + self.tailWidth / 2, top - 1)];
+    [pointer closePath];
+    [path appendBezierPath:pointer];
+    return path;
+}
+- (void)drawRect:(NSRect)dirty {
+    (void)dirty;
+    NSBezierPath *shape = [self shape];
+    [NSColor.windowBackgroundColor setFill];
+    [shape fill];
+    [NSColor.separatorColor setStroke];
+    shape.lineWidth = 1;
+    [shape stroke];
+    // The body's edge under the tail's base, drawn over, so the two read
+    // as one shape.
+    CGFloat top = NSHeight(self.bounds) - self.tail;
+    [NSColor.windowBackgroundColor setFill];
+    NSRectFill(NSMakeRect(self.tip - self.tailWidth / 2 + 1, top - 2, self.tailWidth - 2, 2));
+}
+@end
+
 @interface Tray : NSObject <NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate>
 @property NSStatusItem *status;
 @property NSString *menuJSON;
@@ -31,6 +70,14 @@ static void emit(NSString *kind, NSString *value) {
 @property NSString *iconState;
 @property CGFloat spin;
 @property NSTimer *spinTimer;
+/* The bubble under the icon, the timer that closes it, and whether the
+ * menu is open, when a bubble would only be in the way. */
+@property NSPanel *bubble;
+@property NSTimer *bubbleTimer;
+@property BOOL menuOpen;
+/* A message that arrived while the menu was open, shown once it closes. */
+@property NSString *pendingBubble;
+@property int pendingBubbleOk;
 /* Notifications need an app bundle; a bare cargo build has none. */
 @property BOOL canNotify;
 @end
@@ -1184,7 +1231,103 @@ static NSString *shellQuoted(NSString *path) {
     emit(@"open-settings", @"");
     return NO;
 }
+- (void)menuDidClose:(NSMenu *)menu {
+    if (menu != self.status.menu)
+        return;
+    self.menuOpen = NO;
+    NSString *pending = self.pendingBubble;
+    self.pendingBubble = nil;
+    if (pending)
+        // After the menu has gone from the screen.
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self showBubble:pending ok:self.pendingBubbleOk];
+        });
+}
+/* A passing message under the icon, in a chat bubble whose tail points at
+ * it: the line in its colour, gone after a few seconds or when the next
+ * one replaces it. A panel that never takes focus, as a popover does not
+ * show while the app is in the background, which a menu bar app nearly
+ * always is. */
+- (void)showBubble:(NSString *)text ok:(int)ok {
+    NSButton *button = self.status.button;
+    // Not before the menu bar has placed the icon, as just after launch.
+    if (!button.window || button.window.frame.size.height < 1)
+        return;
+    // Over an open menu it would be in the way: it waits for the menu to
+    // close, as when a menu item starts the work.
+    if (self.menuOpen) {
+        self.pendingBubble = text;
+        self.pendingBubbleOk = ok;
+        return;
+    }
+    [self.bubbleTimer invalidate];
+    if (!self.bubble) {
+        self.bubble = [[NSPanel alloc] initWithContentRect:NSZeroRect
+                                                 styleMask:NSWindowStyleMaskBorderless |
+                                                           NSWindowStyleMaskNonactivatingPanel
+                                                   backing:NSBackingStoreBuffered
+                                                     defer:YES];
+        self.bubble.level = NSStatusWindowLevel;
+        self.bubble.opaque = NO;
+        self.bubble.backgroundColor = NSColor.clearColor;
+        self.bubble.hasShadow = YES;
+        self.bubble.ignoresMouseEvents = YES;
+        self.bubble.collectionBehavior =
+            NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary;
+    }
+    // One line, cut short if it must be, never wrapped.
+    NSTextField *label = [NSTextField labelWithString:text];
+    label.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+    label.textColor = ok == 1 ? appGreen() : ok == 0 ? appError() : NSColor.labelColor;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.maximumNumberOfLines = 1;
+    const CGFloat tail = 8, tailWidth = 16, radius = 10, padX = 14, padY = 8;
+    NSSize textSize = label.fittingSize;
+    textSize.width = MIN(ceil(textSize.width), 420);
+    NSSize size = NSMakeSize(textSize.width + 2 * padX, ceil(textSize.height) + 2 * padY + tail);
+    // Centred under the icon and kept on its screen; the tail stays on the
+    // icon when the body has to move aside at the screen's edge.
+    NSRect icon = [button.window convertRectToScreen:[button convertRect:button.bounds toView:nil]];
+    NSRect screen = button.window.screen.visibleFrame;
+    CGFloat x = NSMidX(icon) - size.width / 2;
+    x = MAX(NSMinX(screen) + 8, MIN(x, NSMaxX(screen) - size.width - 8));
+    CGFloat tip = MAX(radius + tailWidth / 2, MIN(NSMidX(icon) - x, size.width - radius - tailWidth / 2));
+    BubbleView *view = [[BubbleView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    view.tail = tail;
+    view.tailWidth = tailWidth;
+    view.radius = radius;
+    view.tip = tip;
+    label.frame = NSMakeRect(padX, padY, textSize.width, ceil(textSize.height));
+    [view addSubview:label];
+    self.bubble.contentView = view;
+    [self.bubble setFrame:NSMakeRect(x, NSMinY(icon) - size.height - 2, size.width, size.height) display:YES];
+    // The shadow follows the bubble's shape, tail included.
+    [self.bubble invalidateShadow];
+    self.bubble.alphaValue = 1;
+    [self.bubble orderFrontRegardless];
+    self.bubbleTimer = [NSTimer scheduledTimerWithTimeInterval:4
+                                                       repeats:NO
+                                                         block:^(NSTimer *timer) {
+                                                           (void)timer;
+                                                           [self hideBubble];
+                                                         }];
+}
+- (void)hideBubble {
+    [NSAnimationContext
+        runAnimationGroup:^(NSAnimationContext *context) {
+          context.duration = 0.3;
+          self.bubble.animator.alphaValue = 0;
+        }
+        completionHandler:^{
+          if (self.bubble.alphaValue == 0)
+              [self.bubble orderOut:nil];
+        }];
+}
 - (void)menuWillOpen:(NSMenu *)menu {
+    if (menu == self.status.menu)
+        self.menuOpen = YES;
+    [self.bubbleTimer invalidate];
+    [self.bubble orderOut:nil];
     if (menu == self.status.menu)
         emit(@"menu-opened", @"");
 }
@@ -1313,6 +1456,13 @@ void native_set_menu(const char *menu_json) {
     NSString *json = @(menu_json);
     dispatch_async(dispatch_get_main_queue(), ^{
       [tray apply:json];
+    });
+}
+
+void native_bubble(const char *text, int ok) {
+    NSString *message = @(text);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [tray showBubble:message ok:ok];
     });
 }
 

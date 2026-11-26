@@ -23,6 +23,9 @@ void native_stop(void);
 void native_set_menu(const char *menu_json);
 /* Shows a desktop notification; clicking it opens url when it is not empty. */
 void native_notify(const char *title, const char *body, const char *url);
+/* A short message in a bubble under the tray icon, gone after a few seconds;
+ * ok is 1 for good news, 0 for bad, -1 for work in progress. */
+void native_bubble(const char *text, int ok);
 
 /* Linux only: the icon theme directory holding the tray's symbolic icons,
  * runberth-tray[-running|-failed]-symbolic. Call before native_run. */

@@ -480,6 +480,12 @@ static gboolean show_notice(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+/* Tray hosts have no bubble anchored to the icon; notifications say it. */
+void native_bubble(const char *text, int ok) {
+    (void)text;
+    (void)ok;
+}
+
 void native_notify(const char *title, const char *body, const char *url) {
     Notice *notice = g_new0(Notice, 1);
     notice->title = g_strdup(title);

@@ -8,6 +8,7 @@ unsafe extern "C" {
     pub fn native_stop();
     fn native_set_menu(menu_json: *const c_char);
     fn native_notify(title: *const c_char, body: *const c_char, url: *const c_char);
+    fn native_bubble(text: *const c_char, ok: c_int);
     #[cfg(target_os = "macos")]
     pub fn native_login_item(action: c_int) -> c_int;
     #[cfg(target_os = "linux")]
@@ -49,6 +50,18 @@ pub fn settings_status(json: &str) {
 }
 
 /// Thread-safe, like `set_menu`.
+/// A passing message under the tray icon: Some(true) for good news,
+/// Some(false) for bad, None for work in progress.
+pub fn bubble(text: &str, ok: Option<bool>) {
+    let text = cstring(text);
+    let ok = match ok {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    };
+    unsafe { native_bubble(text.as_ptr(), ok) }
+}
+
 pub fn notify(title: &str, body: &str, url: &str) {
     let (title, body, url) = (cstring(title), cstring(body), cstring(url));
     unsafe { native_notify(title.as_ptr(), body.as_ptr(), url.as_ptr()) }

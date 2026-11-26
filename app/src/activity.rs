@@ -69,7 +69,11 @@ impl Activity {
 
     fn outcome(&self, finished: i64) -> String {
         let mark = if self.ok { "✓" } else { "✗" };
-        format!("{mark} {} · took {}", self.result, clock(finished - self.started))
+        // Work done at once has no time worth saying.
+        match finished - self.started {
+            0 => format!("{mark} {}", self.result),
+            took => format!("{mark} {} · took {}", self.result, clock(took)),
+        }
     }
 }
 
@@ -156,9 +160,26 @@ static ACTIVITIES: Mutex<Activities> = Mutex::new(Activities {
 });
 /// Called after every change, to redraw the menu and Settings.
 static ON_CHANGE: OnceLock<fn()> = OnceLock::new();
+/// Called when one starts or ends, the news worth a bubble under the icon;
+/// steps are not.
+static ON_NEWS: OnceLock<fn(&Activity)> = OnceLock::new();
 
 pub fn on_change(callback: fn()) {
     let _ = ON_CHANGE.set(callback);
+}
+
+pub fn on_news(callback: fn(&Activity)) {
+    let _ = ON_NEWS.set(callback);
+}
+
+fn news(id: u64) {
+    let activity = ACTIVITIES
+        .lock()
+        .ok()
+        .and_then(|activities| activities.list.iter().find(|activity| activity.id == id).cloned());
+    if let (Some(callback), Some(activity)) = (ON_NEWS.get(), activity) {
+        callback(&activity);
+    }
 }
 
 fn changed() {
@@ -187,6 +208,7 @@ impl Handle {
             activities.finish(self.0, ok, result, now());
         }
         changed();
+        news(self.0);
     }
 
     pub fn dismiss(self) {
@@ -206,6 +228,7 @@ pub fn begin(key: &str, title: &str) -> Option<Handle> {
 pub fn begin_for(key: &str, title: &str, repo: Option<&str>, verb: &str) -> Option<Handle> {
     let id = ACTIVITIES.lock().ok()?.begin(key, title, repo, verb, now())?;
     changed();
+    news(id);
     Some(Handle(id))
 }
 
@@ -280,6 +303,19 @@ mod tests {
         let current = activities.current(11);
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].key, "install");
+    }
+
+    #[test]
+    fn work_done_at_once_says_no_time() {
+        let mut activities = Activities::default();
+        let id = activities
+            .begin("command-line", "Installing the runberth command", None, "", 50)
+            .unwrap();
+        activities.finish(id, true, "Installed the runberth command", 50);
+        assert_eq!(
+            activities.current(50)[0].line(50),
+            "✓ Installed the runberth command"
+        );
     }
 
     #[test]
