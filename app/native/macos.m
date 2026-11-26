@@ -233,7 +233,7 @@ static NSColor *appRed(void) {
     return [NSColor colorWithSRGBRed:254 / 255.0 green:142 / 255.0 blue:136 / 255.0 alpha:1];
 }
 static NSColor *appError(void) {
-    return [NSColor colorWithSRGBRed:195 / 255.0 green:0 blue:0 alpha:1];
+    return [NSColor colorWithSRGBRed:229 / 255.0 green:37 / 255.0 blue:36 / 255.0 alpha:1];
 }
 static NSColor *appGreen(void) {
     return [NSColor colorWithSRGBRed:0 green:136 / 255.0 blue:66 / 255.0 alpha:1];
