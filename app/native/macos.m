@@ -292,6 +292,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSMutableArray<NSProgressIndicator *> *barSpinners;
 /* How far the work is, from its numbered steps, at the bar's right end. */
 @property NSMutableArray<NSProgressIndicator *> *barMeters;
+/* The activity the bars measure, so a new one starts from empty. */
+@property NSNumber *meterActivity;
 /* The activity the bar shows, when it has output to open on a click. */
 @property NSNumber *barOutput;
 @property BOOL installRunning, cleanupRunning;
@@ -675,9 +677,16 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
         // under way.
         NSArray *progress = spinning ? running[@"progress"] : nil;
         NSProgressIndicator *meter = self.barMeters[index];
-        meter.hidden = ![progress isKindOfClass:NSArray.class];
-        if (!meter.hidden)
+        BOOL measured = [progress isKindOfClass:NSArray.class];
+        // Each run starts empty: a bar keeps its value while hidden, and a
+        // new run would otherwise show the last one's, then sweep back.
+        if (!measured || ![self.meterActivity isEqual:running[@"id"]])
+            meter.doubleValue = 0;
+        meter.hidden = !measured;
+        if (measured)
             meter.doubleValue = ([progress[0] doubleValue] - 1 + 0.5) / [progress[1] doubleValue];
+        if (index + 1 == self.barLabels.count)
+            self.meterActivity = [progress isKindOfClass:NSArray.class] ? running[@"id"] : nil;
         NSProgressIndicator *spinner = self.barSpinners[index];
         spinner.hidden = !spinning;
         if (spinning)
