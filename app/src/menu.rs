@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
+use crate::activity::Activity;
 use crate::github::{Job, Run};
 use crate::runs::{epoch, failed, mark, outcome, short, span};
 use crate::server::{Runner, Status};
@@ -39,17 +40,6 @@ pub struct RepoView {
     pub jobs: HashMap<u64, Vec<Job>>,
 }
 
-/// A connection, disconnection, or sync in progress, which takes a minute or
-/// more on the server.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Operation {
-    pub repo: String,
-    /// "Connecting", "Disconnecting", or "Syncing".
-    pub verb: String,
-    /// The server's latest line, empty until the first.
-    pub step: String,
-}
-
 #[derive(Clone)]
 pub struct View {
     /// "user@host", or None until the settings name a server.
@@ -64,13 +54,10 @@ pub struct View {
     /// Sparkle handles updates in the macOS app.
     pub sparkle: bool,
     pub update: updates::Status,
-    /// Connections and disconnections in progress: repository and verb,
-    /// such as "Connecting".
-    pub operations: Vec<Operation>,
+    /// Work in progress, and recent results: see activity.rs.
+    pub activities: Vec<Activity>,
     /// Private repositories that could be connected, or None without a token.
     pub candidates: Option<Vec<String>>,
-    /// While the server is being cleaned up: its latest line, empty at first.
-    pub cleanup: Option<String>,
     /// A cleanup removed Runberth from this server, which has not answered
     /// since.
     pub removed: bool,
@@ -218,9 +205,16 @@ fn repo_item(
     builder.submenu(label, items)
 }
 
+/// The connect, disconnect, or sync running on a repository.
+fn repo_activity<'a>(view: &'a View, repo: &str) -> Option<&'a Activity> {
+    view.activities
+        .iter()
+        .find(|activity| activity.running() && activity.repo.as_deref() == Some(repo))
+}
+
 /// Private repositories to connect, which must have .github/runberth.json.
 fn connect_item(builder: &mut Builder, view: &View) -> Value {
-    let busy = |repo: &String| view.operations.iter().any(|operation| operation.repo == *repo);
+    let busy = |repo: &String| repo_activity(view, repo).is_some();
     let connected = |repo: &String| view.repos.iter().any(|connected| connected.repo == *repo);
     let mut items = Vec::new();
     match &view.candidates {
@@ -264,14 +258,15 @@ fn icon(view: &View) -> (&'static str, usize) {
         .flatten()
         .filter(|run| run.active())
         .count();
+    // Work the app does turns the spinner, even on a server that is down
+    // or has no Runberth yet, as while installing it.
+    if view.activities.iter().any(Activity::running) {
+        return ("running", active);
+    }
     let server = match &view.server {
         Some(Ok(status)) => status,
         _ => return ("offline", active),
     };
-    // Work the app started on the server turns the spinner too.
-    if !view.operations.is_empty() {
-        return ("running", active);
-    }
     // Without a working token there are no results: a broken setup must not
     // look like a quiet server, nor like one that is down.
     if view.token_error.is_some() {
@@ -304,23 +299,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     let mut builder = Builder::default();
     let mut items = Vec::new();
     let status = view.server.as_ref().and_then(|server| server.as_ref().ok());
-    // Connecting takes a minute or more: say so above everything, with the
-    // server's latest step.
-    for operation in &view.operations {
-        items.push(builder.info(format!("{} {}…", operation.verb, short(&operation.repo))));
-        if !operation.step.is_empty() {
-            items.push(builder.info(short_line(&operation.step)));
+    // Work in progress and recent results, above everything, in the same
+    // words as Settings' status bar.
+    for activity in &view.activities {
+        for line in activity.menu_lines(view.now) {
+            items.push(builder.info(short_line(&line)));
         }
     }
-    if !view.operations.is_empty() {
-        items.push(builder.separator());
-    }
-    // A cleanup takes minutes: say so above everything, step by step.
-    if let Some(step) = &view.cleanup {
-        items.push(builder.info("Cleaning up the server…"));
-        if !step.is_empty() {
-            items.push(builder.info(short_line(step)));
-        }
+    if !view.activities.is_empty() {
         items.push(builder.separator());
     }
     match (&view.server_name, &view.server) {
@@ -400,11 +386,7 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         items.push(builder.info("Repositories as of the server's last answer"));
     }
     for repo in &view.repos {
-        let operation = view
-            .operations
-            .iter()
-            .find(|operation| operation.repo == repo.repo)
-            .map(|operation| operation.verb.as_str());
+        let operation = repo_activity(view, &repo.repo).map(|activity| activity.verb.as_str());
         items.push(repo_item(&mut builder, repo, status, operation, view.now));
     }
     if status.is_some() {
@@ -499,11 +481,12 @@ fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u
             "Runberth — not installed on the server".to_owned()
         }
         "offline" => "Runberth — server unreachable".to_owned(),
-        "running" if !view.operations.is_empty() => {
-            let doing: Vec<String> = view
-                .operations
+        "running" if view.activities.iter().any(Activity::running) => {
+            let doing: Vec<&str> = view
+                .activities
                 .iter()
-                .map(|operation| format!("{} {}", operation.verb.to_lowercase(), short(&operation.repo)))
+                .filter(|activity| activity.running())
+                .map(|activity| activity.title.as_str())
                 .collect();
             format!("Runberth — {}", doing.join(", "))
         }
@@ -570,9 +553,8 @@ mod tests {
             login: 0,
             sparkle: false,
             update: updates::Status::Idle,
-            operations: vec![],
+            activities: vec![],
             candidates: Some(vec!["o/r".into(), "o/new".into()]),
-            cleanup: None,
             removed: false,
             now: epoch("2026-11-16T13:40:00Z").unwrap(),
         }
@@ -701,16 +683,29 @@ mod tests {
     }
 
     #[test]
-    fn operations_in_progress_show_in_the_menu() {
+    fn activities_show_at_the_top_and_mark_their_repositories() {
         let mut busy = view(Some(Ok(status(vec![]))), vec![]);
-        let operation = |repo: &str, verb: &str, step: &str| Operation {
-            repo: repo.into(),
-            verb: verb.into(),
+        let activity = |id: u64, repo: &str, verb: &str, title: &str, step: &str| Activity {
+            id,
+            key: format!("repo:{repo}"),
+            title: title.into(),
             step: step.into(),
+            started: busy.now - 42,
+            finished: None,
+            ok: false,
+            result: String::new(),
+            repo: Some(repo.into()),
+            verb: verb.into(),
         };
-        busy.operations = vec![
-            operation("o/r", "Disconnecting", ""),
-            operation("o/new", "Connecting", "Installing runner dependencies: libicu74"),
+        busy.activities = vec![
+            activity(1, "o/r", "Disconnecting", "Disconnecting r", ""),
+            activity(
+                2,
+                "o/new",
+                "Connecting",
+                "Connecting new",
+                "Installing runner dependencies: libicu74",
+            ),
         ];
         let (menu, _) = build(&busy);
         let top = labels(&menu["items"]);
@@ -718,14 +713,14 @@ mod tests {
         assert_eq!(
             top[0..4],
             [
-                "Disconnecting r…",
-                "Connecting new…",
+                "Disconnecting r… 0:42",
+                "Connecting new… 0:42",
                 "Installing runner dependencies: libicu74",
                 "---"
             ]
         );
         assert_eq!(menu["icon"], "running");
-        assert_eq!(menu["tooltip"], "Runberth — disconnecting r, connecting new");
+        assert_eq!(menu["tooltip"], "Runberth — Disconnecting r, Connecting new");
         let repo = find(&menu["items"], "r — disconnecting…");
         assert!(!labels(&repo["children"]).contains(&"Disconnect".to_owned()));
         assert!(
@@ -825,21 +820,37 @@ mod tests {
     }
 
     #[test]
-    fn a_running_cleanup_shows_its_step_at_the_top() {
-        let mut cleaning = view(Some(Ok(status(vec![]))), vec![]);
-        cleaning.cleanup = Some(String::new());
+    fn long_steps_are_cut_and_results_stay_after_the_work() {
+        let mut cleaning = view(Some(Err(crate::server::NOT_INSTALLED.into())), vec![]);
+        cleaning.activities = vec![Activity {
+            id: 1,
+            key: "cleanup".into(),
+            title: "Removing Runberth from the server".into(),
+            step: format!("Removing libgstreamer-plugins-bad1.0-0:amd64 {}", "x".repeat(40)),
+            started: cleaning.now - 5,
+            finished: None,
+            ok: false,
+            result: String::new(),
+            repo: None,
+            verb: String::new(),
+        }];
         let (menu, _) = build(&cleaning);
-        assert_eq!(labels(&menu["items"])[0..2], ["Cleaning up the server…", "---"]);
-        cleaning.cleanup = Some(format!(
-            "Removing libgstreamer-plugins-bad1.0-0:amd64 {}",
-            "x".repeat(40)
-        ));
-        let (menu, _) = build(&cleaning);
+        // A server without Runberth still spins while work runs on it.
+        assert_eq!(menu["icon"], "running");
         let step = &labels(&menu["items"])[1];
         assert!(
             step.starts_with("Removing libgstreamer") && step.ends_with('…'),
             "{step}"
         );
+        cleaning.activities[0].finished = Some(cleaning.now);
+        cleaning.activities[0].ok = true;
+        cleaning.activities[0].result = "Removed Runberth from the server".into();
+        let (menu, _) = build(&cleaning);
+        assert_eq!(
+            labels(&menu["items"])[0],
+            "✓ Removed Runberth from the server · took 0:05"
+        );
+        assert_eq!(menu["icon"], "offline");
         assert_eq!(step.chars().count(), 60);
     }
 
