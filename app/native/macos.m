@@ -226,6 +226,15 @@ static NSTextField *statusLine(CGFloat width) {
     return label;
 }
 
+/* The app's two signal colours, for everything red or green in Settings:
+ * errors, destructive buttons, and how work ended. */
+static NSColor *appRed(void) {
+    return [NSColor colorWithSRGBRed:254 / 255.0 green:142 / 255.0 blue:136 / 255.0 alpha:1];
+}
+static NSColor *appGreen(void) {
+    return [NSColor colorWithSRGBRed:0 green:136 / 255.0 blue:66 / 255.0 alpha:1];
+}
+
 static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // A status is one line: breaks inside it, such as a progress counter's
     // carriage returns, become spaces.
@@ -236,7 +245,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // A space keeps the line's height while it is empty.
     label.stringValue = text.length ? text : @" ";
     label.toolTip = text.length ? text : nil;
-    label.textColor = ok ? NSColor.secondaryLabelColor : NSColor.systemRedColor;
+    label.textColor = ok ? NSColor.secondaryLabelColor : appRed();
 }
 
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
@@ -327,15 +336,11 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 }
 /* Cleanup, which cannot be undone: a warning and what it removes, beside a
  * red button. The dialog it opens shows the server's full plan. */
-/* The red of a window's close button, which AppKit has no name for. */
-static NSColor *closeButtonRed(void) {
-    return [NSColor colorWithSRGBRed:255 / 255.0 green:95 / 255.0 blue:87 / 255.0 alpha:1];
-}
 - (NSView *)cleanupSection {
     NSImageView *icon = [NSImageView
         imageViewWithImage:[NSImage imageWithSystemSymbolName:@"exclamationmark.circle.fill"
                                      accessibilityDescription:@"Warning"]];
-    icon.contentTintColor = closeButtonRed();
+    icon.contentTintColor = appRed();
     NSTextField *warning = [NSTextField labelWithString:@"Warning: This action is destructive."];
     NSStackView *heading = row(@[ icon, warning ]);
     heading.spacing = 6;
@@ -362,7 +367,7 @@ static NSColor *closeButtonRed(void) {
     // Red with white text, so it cannot pass for an ordinary button.
     self.cleanupButton = pushButton(@"Clean Up…", self, @selector(cleanup:));
     self.cleanupButton.hasDestructiveAction = YES;
-    self.cleanupButton.bezelColor = closeButtonRed();
+    self.cleanupButton.bezelColor = appRed();
     self.cleanupButton.attributedTitle = [[NSAttributedString alloc]
         initWithString:self.cleanupButton.title
             attributes:@{NSForegroundColorAttributeName : NSColor.whiteColor,
@@ -628,7 +633,7 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     for (NSTextField *bar in self.activityBars) {
         setStatus(bar, shown[@"line"] ?: @"", YES);
         if (shown && ![shown[@"running"] boolValue])
-            bar.textColor = [shown[@"ok"] boolValue] ? NSColor.systemGreenColor : NSColor.systemRedColor;
+            bar.textColor = [shown[@"ok"] boolValue] ? appGreen() : appRed();
     }
     BOOL installing = NO, cleaning = NO;
     for (NSDictionary *activity in activities) {
@@ -943,7 +948,7 @@ static NSString *shellQuoted(NSString *path) {
     NSButton *button = self.confirmButton;
     button.enabled = armed;
     button.hasDestructiveAction = armed;
-    button.bezelColor = armed ? closeButtonRed() : nil;
+    button.bezelColor = armed ? appRed() : nil;
     NSDictionary *attributes = armed ? @{NSForegroundColorAttributeName : NSColor.whiteColor,
                                          NSFontAttributeName : button.font}
                                      : @{NSFontAttributeName : button.font};
