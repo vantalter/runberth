@@ -290,6 +290,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSMutableArray<NSTextField *> *barLabels;
 @property NSMutableArray<NSImageView *> *barIcons;
 @property NSMutableArray<NSProgressIndicator *> *barSpinners;
+/* The activity the bar shows, when it has output to open on a click. */
+@property NSNumber *barOutput;
 @property BOOL installRunning, cleanupRunning;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
@@ -637,9 +639,11 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     NSColor *color = NSColor.secondaryLabelColor;
     NSString *symbolName = nil;
     BOOL spinning = NO;
+    NSDictionary *shown = nil;
     if (running) {
         text = running[@"line"];
         spinning = YES;
+        shown = running;
     } else if (self.settingsError.length) {
         text = self.settingsError;
         color = appError();
@@ -649,7 +653,9 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
         text = latest[@"line"];
         color = ok ? appGreen() : appError();
         symbolName = ok ? @"checkmark.circle.fill" : @"xmark.circle.fill";
+        shown = latest;
     }
+    self.barOutput = [shown[@"output"] boolValue] ? shown[@"id"] : nil;
     // The symbol says it: the line drops its leading mark.
     if ([text hasPrefix:@"✓ "] || [text hasPrefix:@"✗ "])
         text = [text substringFromIndex:2];
@@ -657,6 +663,8 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     for (NSUInteger index = 0; index < self.barLabels.count; index++) {
         setStatus(self.barLabels[index], text, YES);
         self.barLabels[index].textColor = color;
+        if (self.barOutput)
+            self.barLabels[index].toolTip = [text stringByAppendingString:@"\nClick to show the whole output"];
         NSImageView *icon = self.barIcons[index];
         icon.image = image;
         icon.contentTintColor = color;
@@ -848,7 +856,13 @@ static NSString *shellQuoted(NSString *path) {
     [self.barLabels addObject:label];
     [self.barIcons addObject:icon];
     [self.barSpinners addObject:spinner];
+    // A click opens everything the work printed, as Show Output does.
+    [bar addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(barClicked:)]];
     return bar;
+}
+- (void)barClicked:(NSGestureRecognizer *)sender {
+    if (self.barOutput)
+        emit(@"show-output", self.barOutput.stringValue);
 }
 - (void)build {
     NSTabViewController *tabs = [[NSTabViewController alloc] init];

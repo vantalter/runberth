@@ -15,6 +15,8 @@ use serde::Serialize;
 
 /// How long a finished activity's result stays shown, in seconds.
 const KEEP_RESULT: i64 = 5 * 60;
+/// The most output lines an activity keeps; the oldest go first.
+const KEEP_OUTPUT: usize = 5000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Activity {
@@ -37,11 +39,34 @@ pub struct Activity {
     pub repo: Option<String>,
     /// "Connecting", "Disconnecting", or "Syncing" for a repository.
     pub verb: String,
+    /// Every line the work printed, for Show Output.
+    #[serde(skip)]
+    pub output: Vec<String>,
 }
 
 impl Activity {
     pub fn running(&self) -> bool {
         self.finished.is_none()
+    }
+
+    pub fn has_output(&self) -> bool {
+        !self.output.is_empty()
+    }
+
+    /// The whole output as a file to read: what it was, when it started,
+    /// every line, and how it ended.
+    pub fn report(&self, now: i64, started: &str) -> String {
+        let mut text = format!("{}\nStarted {started}\n\n", self.title);
+        for line in &self.output {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push('\n');
+        text.push_str(&match self.finished {
+            None => format!("Still running after {}\n", clock(now - self.started)),
+            Some(_) => format!("{}\n", self.line(now)),
+        });
+        text
     }
 
     /// The lines the menu shows: two while it runs, one after.
@@ -114,12 +139,18 @@ impl Activities {
             result: String::new(),
             repo: repo.map(str::to_owned),
             verb: verb.to_owned(),
+            output: Vec::new(),
         });
         Some(self.next)
     }
 
     pub fn step(&mut self, id: u64, step: &str) {
         if let Some(activity) = self.list.iter_mut().find(|activity| activity.id == id) {
+            // The output keeps the line as it came.
+            activity.output.push(step.to_owned());
+            if activity.output.len() > KEEP_OUTPUT {
+                activity.output.remove(0);
+            }
             // apt's lines end in "...", and the menu adds its own "…".
             step.trim_end_matches(['.', ' ', '…'])
                 .clone_into(&mut activity.step);
@@ -220,6 +251,11 @@ pub fn record(key: &str, title: &str, ok: bool, result: &str) {
     }
 }
 
+/// One activity, while it is shown.
+pub fn find(id: u64) -> Option<Activity> {
+    current().into_iter().find(|activity| activity.id == id)
+}
+
 pub fn current() -> Vec<Activity> {
     ACTIVITIES
         .lock()
@@ -284,6 +320,40 @@ mod tests {
         let current = activities.current(11);
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].key, "install");
+    }
+
+    #[test]
+    fn the_output_keeps_every_line_as_it_came() {
+        let mut activities = Activities::default();
+        let id = activities
+            .begin("cleanup", "Removing Runberth from the server", None, "", 0)
+            .unwrap();
+        assert!(!activities.current(0)[0].has_output());
+        activities.step(id, "Stopping the runners");
+        activities.step(id, "Removing gcc-15 (15.2.0) ...");
+        let running = &activities.current(5)[0];
+        assert_eq!(
+            running.output,
+            ["Stopping the runners", "Removing gcc-15 (15.2.0) ..."]
+        );
+        assert_eq!(running.step, "Removing gcc-15 (15.2.0)");
+        assert!(running.report(5, "17:10").ends_with("Still running after 0:05\n"));
+        activities.finish(id, true, "Removed Runberth from the server", 9);
+        let report = activities.current(9)[0].report(9, "17:10");
+        assert_eq!(
+            report,
+            "Removing Runberth from the server\nStarted 17:10\n\nStopping the runners\n\
+             Removing gcc-15 (15.2.0) ...\n\n✓ Removed Runberth from the server · took 0:09\n"
+        );
+        for n in 0..KEEP_OUTPUT + 10 {
+            activities.step(id, &n.to_string());
+        }
+        let output = &activities.current(9)[0].output;
+        assert_eq!(output.len(), KEEP_OUTPUT);
+        assert_eq!(
+            output.last().map(String::as_str),
+            Some((KEEP_OUTPUT + 9).to_string().as_str())
+        );
     }
 
     #[test]

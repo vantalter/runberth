@@ -56,7 +56,55 @@ static SPARKLE: AtomicBool = AtomicBool::new(false);
 static INSTALLED: AtomicI32 = AtomicI32::new(-1);
 /// An install handed to Terminal, because sudo asked for a password: it
 /// ends once the server has Runberth.
-static INSTALLING_IN_TERMINAL: Mutex<Option<activity::Handle>> = Mutex::new(None);
+static INSTALLING_IN_TERMINAL: Mutex<Option<(activity::Handle, Change)>> = Mutex::new(None);
+
+/// What `runberth install` or `update` does to the server, in the words its
+/// activity and notification use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Install,
+    Update,
+}
+
+impl Change {
+    fn of(args: &[String]) -> Self {
+        if args.first().map(String::as_str) == Some("update") {
+            Self::Update
+        } else {
+            Self::Install
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Install => "Installing Runberth on the server",
+            Self::Update => "Updating Runberth on the server",
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Self::Install => "Installed Runberth on the server",
+            Self::Update => "Updated Runberth on the server",
+        }
+    }
+
+    fn failed(self) -> &'static str {
+        match self {
+            Self::Install => "Couldn't install Runberth",
+            Self::Update => "Couldn't update Runberth",
+        }
+    }
+
+    /// Whether the server shows that a change made in Terminal is done:
+    /// it has Runberth, and after an update, this app's version.
+    fn done_on(self, status: &server::Status) -> bool {
+        match self {
+            Self::Install => true,
+            Self::Update => status.version == env!("CARGO_PKG_VERSION"),
+        }
+    }
+}
 /// The server a cleanup removed Runberth from, until it answers again: its
 /// failing status then means "removed", not "unreachable".
 static REMOVED: Mutex<Option<config::Server>> = Mutex::new(None);
@@ -116,8 +164,9 @@ fn perform(action: Action) {
         Action::CheckUpdates => wake(Wake::CheckUpdates),
         Action::Connect(repo) => start_operation("connect", repo),
         Action::Logs(repo) => show_logs(repo),
-        Action::UpdateServer => run_in_terminal(&["update"]),
+        Action::UpdateServer => in_background(|| install_in_app(&["update".to_owned()])),
         Action::Report => report_problem(),
+        Action::ShowOutput(id) => show_output(id),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
             wake(Wake::Stop);
@@ -171,6 +220,12 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
+        // The Settings status bar's line, clicked: {"id"}.
+        "show-output" => {
+            if let Ok(id) = value.parse() {
+                show_output(id);
+            }
+        }
         // Work the native side did itself, such as installing the command
         // line tool: {"key", "title", "ok", "result"}.
         "activity-record" => {
@@ -278,10 +333,12 @@ fn activity_lines() -> Vec<serde_json::Value> {
         .iter()
         .map(|activity| {
             json!({
+                "id": activity.id,
                 "key": activity.key,
                 "running": activity.running(),
                 "ok": activity.ok,
                 "line": activity.line(now),
+                "output": activity.has_output(),
             })
         })
         .collect()
@@ -608,6 +665,29 @@ fn show_logs(repo: String) {
     });
 }
 
+/// Opens an activity's whole output in the text editor, as Show Logs does a
+/// runner's: everything the work printed, not only the line shown.
+fn show_output(id: u64) {
+    let Some(activity) = activity::find(id) else {
+        return;
+    };
+    let now = runs::now();
+    let started = format!("{} ago", runs::span(now - activity.started));
+    let path = config::cache_dir()
+        .join("output")
+        .join(format!("{}.log", activity.key.replace([':', '/'], "-")));
+    let saved = std::fs::create_dir_all(path.parent().expect("an output folder"))
+        .and_then(|()| std::fs::write(&path, activity.report(now, &started)));
+    match saved {
+        Ok(()) if cfg!(target_os = "macos") => {
+            // -t opens the text editor rather than the app for .log files.
+            let _ = Command::new("open").arg("-t").arg(&path).spawn();
+        }
+        Ok(()) => open(&path.display().to_string()),
+        Err(error) => announce(News::Problem, "Cannot show the output", &error.to_string(), ""),
+    }
+}
+
 /// Opens the Settings window with the settings file's current values.
 fn show_settings() {
     // Linux keeps to the settings file, so the app needs no GUI toolkit.
@@ -662,7 +742,9 @@ fn cleanup_server(activity: activity::Handle) {
 /// terminal, it hands the install to Terminal, and the activity ends once
 /// the server has Runberth.
 fn install_in_app(args: &[String]) {
-    let Some(activity) = activity::begin("install", "Installing Runberth on the server") else {
+    let change = Change::of(args);
+    // One key for both: an install and an update never run at once.
+    let Some(activity) = activity::begin("install", change.title()) else {
         return;
     };
     let result = run_self_streaming(args, |line| activity.step(line));
@@ -670,19 +752,19 @@ fn install_in_app(args: &[String]) {
         Err(output) if needs_password(&output) => {
             activity.step("sudo asks for the server's password: continue in Terminal");
             if let Ok(mut pending) = INSTALLING_IN_TERMINAL.lock() {
-                *pending = Some(activity);
+                *pending = Some((activity, change));
             }
             run_in_terminal(args);
         }
-        result => finish_install(activity, result.map_err(|output| last_line(&output))),
+        result => finish_install(activity, change, result.map_err(|output| last_line(&output))),
     }
     wake(Wake::Refresh);
 }
 
-fn finish_install(activity: activity::Handle, result: Result<(), String>) {
+fn finish_install(activity: activity::Handle, change: Change, result: Result<(), String>) {
     let (ok, title, body) = match result {
-        Ok(()) => (true, "Installed Runberth on the server".to_owned(), String::new()),
-        Err(error) => (false, "Couldn't install Runberth".to_owned(), error),
+        Ok(()) => (true, change.done().to_owned(), String::new()),
+        Err(error) => (false, change.failed().to_owned(), error),
     };
     announce(News::ended(ok), &title, &body, "");
     activity.finish(ok, &if ok { title } else { format!("{title}: {body}") });
@@ -961,13 +1043,17 @@ impl Poller {
         if INSTALLED.swap(installed, Ordering::Relaxed) != installed {
             native::settings_status(&json!({"installed": installed}).to_string());
         }
-        if installed == 1 {
-            if let Some(activity) = INSTALLING_IN_TERMINAL
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.take())
-            {
-                finish_install(activity, Ok(()));
+        // A change handed to Terminal ends once the server shows it.
+        if let Some(Ok(status)) = &result {
+            let finished = INSTALLING_IN_TERMINAL.lock().ok().and_then(|mut pending| {
+                if pending.as_ref().is_some_and(|(_, change)| change.done_on(status)) {
+                    pending.take()
+                } else {
+                    None
+                }
+            });
+            if let Some((activity, change)) = finished {
+                finish_install(activity, change, Ok(()));
             }
         }
         let removed = REMOVED.lock().is_ok_and(|mut removed| {
@@ -1318,6 +1404,26 @@ mod install_tests {
         assert!(News::Problem.wanted(Failures));
         assert!(!News::Started.wanted(Failures) && !News::Done.wanted(Failures));
         assert_eq!(News::ended(false), News::Problem);
+    }
+
+    #[test]
+    fn an_update_reads_as_one_and_ends_on_this_version() {
+        let update = Change::of(&["update".to_owned()]);
+        assert_eq!(update, Change::Update);
+        assert_eq!(update.title(), "Updating Runberth on the server");
+        assert_eq!(
+            Change::of(&["install".to_owned(), "--swap".to_owned()]),
+            Change::Install
+        );
+        let status = |version: &str| {
+            server::Status::parse(&format!(
+                r#"{{"format": 1, "version": "{version}", "mode": "on-demand"}}"#
+            ))
+            .unwrap()
+        };
+        assert!(!update.done_on(&status("0.0.1")));
+        assert!(update.done_on(&status(env!("CARGO_PKG_VERSION"))));
+        assert!(Change::Install.done_on(&status("0.0.1")));
     }
 
     #[test]

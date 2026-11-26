@@ -28,6 +28,8 @@ pub enum Action {
     UpdateServer,
     /// Open GitHub's bug report form, prefilled.
     Report,
+    /// Open an activity's whole output in the text editor.
+    ShowOutput(u64),
     Quit,
 }
 
@@ -304,6 +306,10 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     for activity in &view.activities {
         for line in activity.menu_lines(view.now) {
             items.push(builder.info(short_line(&line)));
+        }
+        // Everything the work printed, not only its latest line.
+        if activity.has_output() {
+            items.push(builder.item("Show Output", Action::ShowOutput(activity.id)));
         }
     }
     if !view.activities.is_empty() {
@@ -696,6 +702,7 @@ mod tests {
             result: String::new(),
             repo: Some(repo.into()),
             verb: verb.into(),
+            output: vec![],
         };
         busy.activities = vec![
             activity(1, "o/r", "Disconnecting", "Disconnecting r", ""),
@@ -833,6 +840,7 @@ mod tests {
             result: String::new(),
             repo: None,
             verb: String::new(),
+            output: vec![],
         }];
         let (menu, _) = build(&cleaning);
         // A server without Runberth still spins while work runs on it.
