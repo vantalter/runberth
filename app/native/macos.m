@@ -208,10 +208,20 @@ static NSTextField *statusLine(CGFloat width) {
     label.maximumNumberOfLines = 1;
     label.usesSingleLineMode = YES;
     [label.widthAnchor constraintEqualToConstant:width].active = YES;
+    // One line high whatever it is given, so no text can resize the window.
+    [label.heightAnchor constraintEqualToConstant:ceil(label.font.ascender - label.font.descender +
+                                                       label.font.leading) + 2]
+        .active = YES;
     return label;
 }
 
 static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
+    // A status is one line: breaks inside it, such as a progress counter's
+    // carriage returns, become spaces.
+    NSArray<NSString *> *parts =
+        [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    text = [[parts filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]]
+        componentsJoinedByString:@" "];
     // A space keeps the line's height while it is empty.
     label.stringValue = text.length ? text : @" ";
     label.toolTip = text.length ? text : nil;
@@ -220,6 +230,81 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
  * after typing stops; Rust validates them and reports problems back. */
+/* "2:05" for a running time. */
+static NSString *minutesAndSeconds(NSTimeInterval seconds) {
+    long whole = (long)seconds;
+    return [NSString stringWithFormat:@"%ld:%02ld", whole / 60, whole % 60];
+}
+
+/* Work on the server that takes minutes, such as an install or a cleanup,
+ * on one status line: the latest step and a running clock while it runs,
+ * so it never looks stuck, then how it ended, in colour, with the time it
+ * took. The line keeps the result: a dialog could be dismissed while
+ * another app is in front, and a notification says it too. */
+@interface Progress : NSObject
+@property NSTextField *label;
+@property NSDate *started;
+@property NSString *step;
+@property NSTimer *timer;
+@end
+
+@implementation Progress
+- (instancetype)initWithLabel:(NSTextField *)label {
+    if ((self = [super init]))
+        self.label = label;
+    return self;
+}
+- (BOOL)running {
+    return self.started != nil;
+}
+- (void)start:(NSString *)step {
+    self.started = [NSDate date];
+    self.step = step;
+    [self.timer invalidate];
+    __weak Progress *weak = self;
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:1
+                                                 repeats:YES
+                                                   block:^(NSTimer *timer) {
+                                                     (void)timer;
+                                                     [weak show];
+                                                   }];
+    [self show];
+}
+- (void)step:(NSString *)step {
+    if (!self.running)
+        return;
+    self.step = step;
+    [self show];
+}
+- (void)show {
+    if (!self.running)
+        return;
+    NSString *elapsed = minutesAndSeconds(-self.started.timeIntervalSinceNow);
+    // apt's lines end in "...": one ellipsis is enough.
+    NSString *step =
+        [self.step stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@". …"]];
+    // The clock first, so a long line cannot push it out of sight.
+    setStatus(self.label, [NSString stringWithFormat:@"%@ · %@…", elapsed, step], YES);
+}
+/* Empties the line, unless the work still runs: a result stops being true
+ * once other work changes the server. */
+- (void)clear {
+    if (!self.running)
+        setStatus(self.label, @"", YES);
+}
+- (void)finish:(NSString *)message ok:(BOOL)ok {
+    NSTimeInterval took = self.running ? -self.started.timeIntervalSinceNow : 0;
+    [self.timer invalidate];
+    self.timer = nil;
+    self.started = nil;
+    NSString *line =
+        [NSString stringWithFormat:@"%@ %@ · took %@", ok ? @"✓" : @"✗", message, minutesAndSeconds(took)];
+    setStatus(self.label, line, ok);
+    if (ok)
+        self.label.textColor = NSColor.systemGreenColor;
+}
+@end
+
 @interface Settings : NSObject <NSWindowDelegate, NSTextFieldDelegate>
 @property NSWindow *window;
 @property NSTextField *host, *user, *port, *key, *tokenCommand, *interval;
@@ -231,6 +316,14 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
 @property NSTextField *testStatus, *tokenState, *loginNote, *version, *settingsPath;
+/* Install Runberth…, enabled unless the server is known to have Runberth. */
+@property NSButton *installButton;
+/* Whether the server has Runberth: 1 yes, 0 no, -1 not known. */
+@property int serverInstalled;
+/* The install options in their sheet. */
+@property NSPopUpButton *installSwap;
+@property NSButton *installOnDemand;
+@property NSTextField *installPackages;
 /* Enabled only when there is a token to save, or a stored one to remove. */
 @property NSButton *saveTokenButton, *removeTokenButton;
 /* A typed token is on its way to the keychain: once it is stored, the field
@@ -244,11 +337,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 /* Installs the command, or removes the app's link once it is installed. */
 @property NSButton *commandLineButton;
 @property NSButton *cleanupButton;
-/* While a cleanup runs: when it started, the server's latest line, and the
- * timer that shows both on the status line each second. */
-@property NSDate *cleanupStarted;
-@property NSString *cleanupStep;
-@property NSTimer *cleanupTimer;
+/* The cleanup's progress and result on its status line, and the install's
+ * on the line under Test Connection. */
+@property Progress *cleanupProgress, *installProgress;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
 @property NSButton *confirmButton;
@@ -273,6 +364,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // One line for the test's result and the settings' errors, which also
     // replace a result that the edit made stale.
     self.testStatus = statusLine(300);
+    self.installButton = pushButton(@"Install Runberth…", self, @selector(installRunberth:));
+    self.installProgress = [[Progress alloc] initWithLabel:self.testStatus];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:self.testStatus];
     NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
@@ -281,7 +374,9 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         @[ @"SSH key:", column(@[ row(@[ self.key, pushButton(@"Choose…", self, @selector(chooseKey:)) ]),
                                   keyNote ]) ],
         NSNull.null,
-        @[ @"", column(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.testStatus ]) ],
+        @[ @"", column(@[ row(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)),
+                                 self.installButton ]),
+                          self.testStatus ]) ],
     ]);
     NSBox *line = [[NSBox alloc] init];
     line.boxType = NSBoxSeparator;
@@ -322,6 +417,7 @@ static NSColor *closeButtonRed(void) {
         [lines addObject:bullet];
     }
     self.cleanupStatus = statusLine(300);
+    self.cleanupProgress = [[Progress alloc] initWithLabel:self.cleanupStatus];
     [lines addObject:self.cleanupStatus];
     NSStackView *text = column(lines);
     text.spacing = 4;
@@ -773,7 +869,10 @@ static NSString *shellQuoted(NSString *path) {
                     self.confirmButton = nil;
                     self.confirmAlert = nil;
                     if (response == NSModalResponseOK) {
-                        [self startCleanupProgress];
+                        self.cleanupButton.enabled = NO;
+                        // Only the latest change to the server shows its result.
+                        [self.installProgress clear];
+                        [self.cleanupProgress start:@"Removing Runberth from the server"];
                         emit(@"cleanup-execute", @"");
                     } else {
                         self.cleanupButton.enabled = YES;
@@ -781,48 +880,68 @@ static NSString *shellQuoted(NSString *path) {
                     }
                   }];
 }
-/* "2:05" for a cleanup's running time. */
-static NSString *minutesAndSeconds(NSTimeInterval seconds) {
-    long whole = (long)seconds;
-    return [NSString stringWithFormat:@"%ld:%02ld", whole / 60, whole % 60];
-}
-/* A cleanup takes minutes, mostly removing packages: the status line shows
- * the server's latest step and a running clock, so it never looks stuck. */
-- (void)startCleanupProgress {
-    self.cleanupButton.enabled = NO;
-    self.cleanupStarted = [NSDate date];
-    self.cleanupStep = @"Removing Runberth from the server";
-    [self.cleanupTimer invalidate];
-    self.cleanupTimer = [NSTimer scheduledTimerWithTimeInterval:1
-                                                        repeats:YES
-                                                          block:^(NSTimer *timer) {
-                                                            (void)timer;
-                                                            [self showCleanupProgress];
-                                                          }];
-    [self showCleanupProgress];
-}
-- (void)showCleanupProgress {
-    if (!self.cleanupStarted)
+/* The options for `runberth install`, which the app then runs, showing its
+ * steps under Test Connection; when sudo on the server asks for a password,
+ * it continues in Terminal. */
+- (void)installRunberth:(id)sender {
+    if (self.window.attachedSheet)
         return;
-    NSString *elapsed = minutesAndSeconds(-self.cleanupStarted.timeIntervalSinceNow);
-    // apt's lines end in "...": one ellipsis is enough.
-    NSString *step = [self.cleanupStep
-        stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@". …"]];
-    // The clock first, so a long apt line cannot push it out of sight.
-    setStatus(self.cleanupStatus, [NSString stringWithFormat:@"%@ · %@…", elapsed, step], YES);
-}
-/* How the cleanup ended stays on the status line, in colour, with its
- * running time: a dialog could be dismissed while another app is in front
- * during the minutes it takes, and the notification says it too. */
-- (void)finishCleanup:(NSString *)message ok:(BOOL)ok {
-    NSTimeInterval took = self.cleanupStarted ? -self.cleanupStarted.timeIntervalSinceNow : 0;
-    [self.cleanupTimer invalidate];
-    self.cleanupTimer = nil;
-    self.cleanupStarted = nil;
-    NSString *line = [NSString stringWithFormat:@"%@ %@ · took %@", ok ? @"✓" : @"✗", message, minutesAndSeconds(took)];
-    setStatus(self.cleanupStatus, line, ok);
-    if (ok)
-        self.cleanupStatus.textColor = NSColor.systemGreenColor;
+    // Install the server the window shows, not an edit still being typed.
+    [self save];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Install Runberth on the server";
+    alert.informativeText =
+        @"This installs Runberth for this app's version, the sudoers rule the app needs, and a host config "
+        @"for your GitHub token's account with the runner label runberth-ci. If sudo on the server asks for a "
+        @"password, the install continues in Terminal.";
+    self.installSwap = [[NSPopUpButton alloc] init];
+    for (NSArray *choice in @[ @[ @"No swap", @0 ], @[ @"2 GB", @2 ], @[ @"3 GB", @3 ], @[ @"4 GB", @4 ] ]) {
+        [self.installSwap addItemWithTitle:choice[0]];
+        self.installSwap.lastItem.tag = [choice[1] integerValue];
+    }
+    [self.installSwap selectItemWithTag:3];
+    self.installOnDemand = [NSButton checkboxWithTitle:@"Start runners only when a job arrives (experimental)"
+                                                target:nil
+                                                action:nil];
+    self.installOnDemand.state = NSControlStateValueOn;
+    // actions/checkout needs git for history, tags, and diffs; a server that
+    // has it already keeps it, and cleanup leaves it.
+    self.installPackages = [NSTextField textFieldWithString:@"git"];
+    self.installPackages.placeholderString = @"git gcc";
+    [self.installPackages.widthAnchor constraintEqualToConstant:240].active = YES;
+    NSTextField *swapNote = noteLabel();
+    swapNote.stringValue = @"Room for builds on a small server.";
+    NSTextField *onDemandNote = noteLabel();
+    onDemandNote.stringValue = @"Saves about 70 MB per repository; a job waits a few seconds for its runner.";
+    NSTextField *packagesNote = noteLabel();
+    packagesNote.stringValue = @"apt packages your builds need, such as gcc for Rust. Add more later with "
+                               @"runberth packages add NAME; cleanup removes them.";
+    NSGridView *options = form(@[
+        @[ @"Swap:", column(@[ self.installSwap, swapNote ]) ],
+        @[ @"Runners:", column(@[ self.installOnDemand, onDemandNote ]) ],
+        @[ @"Packages:", column(@[ self.installPackages, packagesNote ]) ],
+    ]);
+    options.frame = NSMakeRect(0, 0, options.fittingSize.width, options.fittingSize.height);
+    alert.accessoryView = options;
+    [alert addButtonWithTitle:@"Install"];
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];
+    cancel.keyEquivalent = @"\033";
+    [alert beginSheetModalForWindow:self.window
+                  completionHandler:^(NSModalResponse response) {
+                    if (response != NSAlertFirstButtonReturn)
+                        return;
+                    NSDictionary *choice = @{
+                        @"swap" : @(self.installSwap.selectedTag),
+                        @"on_demand" : @(self.installOnDemand.state == NSControlStateValueOn),
+                        @"packages" : self.installPackages.stringValue,
+                    };
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:choice options:0 error:NULL];
+                    self.installButton.enabled = NO;
+                    // Only the latest change to the server shows its result.
+                    [self.cleanupProgress clear];
+                    [self.installProgress start:@"Installing Runberth on the server"];
+                    emit(@"install-server", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
+                  }];
 }
 /* Remove Everything is a plain, greyed-out button until the host is typed,
  * then red with white text, as the Clean Up… button that opened it. */
@@ -848,15 +967,35 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
         setStatus(self.testStatus, state[@"test"], [state[@"test_ok"] boolValue]);
     if (state[@"cleanup_plan"])
         [self confirmCleanup:state[@"cleanup_plan"]];
-    if (state[@"cleanup_progress"] && self.cleanupStarted) {
-        self.cleanupStep = state[@"cleanup_progress"];
-        [self showCleanupProgress];
+    if (state[@"installed"]) {
+        // 1 installed, 0 not, -1 not known: each button stays available
+        // unless the server is known not to need it.
+        int installed = [state[@"installed"] intValue];
+        self.serverInstalled = installed;
+        self.installButton.enabled = installed != 1;
+        self.installButton.toolTip =
+            installed == 1 ? @"Runberth is installed: Update Server… in the menu updates it" : nil;
+        if (self.installProgress.running)
+            self.installButton.enabled = NO;
+        if (!self.cleanupProgress.running)
+            self.cleanupButton.enabled = installed != 0;
+        self.cleanupButton.toolTip = installed == 0 ? @"Runberth is not installed on this server" : nil;
     }
+    if (state[@"install_progress"])
+        [self.installProgress step:state[@"install_progress"]];
+    if (state[@"install_done"]) {
+        [self.installProgress finish:state[@"install"] ok:[state[@"install_ok"] boolValue]];
+        // After a failure, Install is available again unless the server
+        // is known to have Runberth.
+        self.installButton.enabled = ![state[@"install_ok"] boolValue] && self.serverInstalled != 1;
+    }
+    if (state[@"cleanup_progress"])
+        [self.cleanupProgress step:state[@"cleanup_progress"]];
     if (state[@"cleanup"]) {
         setStatus(self.cleanupStatus, state[@"cleanup"], [state[@"cleanup_ok"] boolValue]);
         self.cleanupButton.enabled = YES;
         if (state[@"cleanup_done"])
-            [self finishCleanup:state[@"cleanup"] ok:[state[@"cleanup_ok"] boolValue]];
+            [self.cleanupProgress finish:state[@"cleanup"] ok:[state[@"cleanup_ok"] boolValue]];
     }
     if (state[@"token_stored"]) {
         if (self.savingToken && [state[@"token_stored"] boolValue] && [state[@"token_ok"] boolValue])

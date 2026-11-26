@@ -126,15 +126,10 @@ pub fn parse(args: &[&str]) -> Result<Options, String> {
             }
             "--packages" => {
                 install_only("--packages")?;
-                for package in value()?.split([' ', ',']).filter(|name| !name.is_empty()) {
-                    let valid = package.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-                        && plain(package, "+.:-")
-                        && !package.chars().any(|c| c.is_ascii_uppercase());
-                    valid
-                        .then_some(())
-                        .ok_or(format!("--packages has an invalid package name: {package}"))?;
-                    options.packages.push(package.to_owned());
-                }
+                options.packages.extend(
+                    package_names(value()?)
+                        .map_err(|name| format!("--packages has an invalid package name: {name}"))?,
+                );
             }
             "--version" => {
                 let version = value()?;
@@ -177,6 +172,25 @@ fn account(server: &Server) -> String {
     } else {
         server.user.clone()
     }
+}
+
+/// apt package names from a list separated by spaces or commas, or the
+/// first name that is not one: lowercase, as Debian names them, and never
+/// starting with "-", so none can pass for an option.
+pub fn package_names(list: &str) -> Result<Vec<String>, String> {
+    list.split([' ', ','])
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            let valid = name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && plain(name, "+.:-")
+                && !name.chars().any(|c| c.is_ascii_uppercase());
+            if valid {
+                Ok(name.to_owned())
+            } else {
+                Err(name.to_owned())
+            }
+        })
+        .collect()
 }
 
 /// The passwordless sudoers rule that `runberth connect` and the app need;

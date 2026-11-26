@@ -331,9 +331,16 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
             };
             items.push(builder.info(format!("{mode} · {lock}")));
         }
-        (Some(name), Some(Err(_))) if view.removed => {
-            items.push(builder.info(format!("{name} — Runberth removed")));
-            items.push(builder.info("Install it again with runberth install"));
+        (Some(name), Some(Err(error))) if view.removed || error == crate::server::NOT_INSTALLED => {
+            let state = if view.removed {
+                "Runberth removed"
+            } else {
+                "Runberth not installed"
+            };
+            items.push(builder.info(format!("{name} — {state}")));
+            // Installing asks for options: Settings has them, and Linux,
+            // without a Settings window, has the command.
+            items.push(builder.info(INSTALL_HINT));
         }
         (Some(name), Some(Err(error))) => {
             items.push(builder.info(format!("{name} — unreachable")));
@@ -348,11 +355,14 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     for error in view.token_error.iter().chain(&view.errors) {
         items.push(builder.info(error.clone()));
     }
-    // A removed server has no repositories section, not even an empty one.
-    if !(view.removed && view.repos.is_empty()) {
+    // A server without Runberth has no repositories section, not even an
+    // empty one.
+    let missing =
+        view.removed || matches!(&view.server, Some(Err(error)) if error == crate::server::NOT_INSTALLED);
+    if !(missing && view.repos.is_empty()) {
         items.push(builder.separator());
     }
-    if view.repos.is_empty() && !view.removed {
+    if view.repos.is_empty() && !missing {
         let empty = if status.is_some() {
             "No repositories connected"
         } else {
@@ -415,6 +425,13 @@ fn short_line(text: &str) -> String {
     format!("{cut}…")
 }
 
+/// Where to install Runberth on a server without it.
+const INSTALL_HINT: &str = if SETTINGS_WINDOW {
+    "Install it in Settings > Server"
+} else {
+    "Install it with runberth install"
+};
+
 /// Whether this platform has a Settings window for the app's options.
 const SETTINGS_WINDOW: bool = cfg!(target_os = "macos");
 
@@ -457,6 +474,9 @@ fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u
     let tooltip = match icon {
         "attention" => "Runberth — job results need a working GitHub token".to_owned(),
         "offline" if view.removed => "Runberth — removed from the server".to_owned(),
+        "offline" if matches!(&view.server, Some(Err(error)) if error == crate::server::NOT_INSTALLED) => {
+            "Runberth — not installed on the server".to_owned()
+        }
         "offline" => "Runberth — server unreachable".to_owned(),
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
@@ -781,17 +801,29 @@ mod tests {
         let mut removed = view(Some(Err("sudo: a password is required".into())), vec![]);
         removed.removed = true;
         removed.repos.clear();
-        let (menu, _) = build(&removed);
+        let (menu, actions) = build(&removed);
         assert_eq!(
             labels(&menu["items"])[0..2],
-            [
-                "ubuntu@192.0.2.1 — Runberth removed",
-                "Install it again with runberth install"
-            ]
+            ["ubuntu@192.0.2.1 — Runberth removed", INSTALL_HINT]
         );
+        // A hint, not an action.
+        assert_eq!(menu["items"][1]["enabled"], false);
+        assert!(!actions.values().any(|action| *action == Action::UpdateServer));
         assert_eq!(menu["icon"], "offline");
         assert_eq!(menu["tooltip"], "Runberth — removed from the server");
         assert_eq!(labels(&menu["items"])[2..4], ["---", "Refresh Now"]);
+    }
+
+    #[test]
+    fn a_server_without_runberth_offers_to_install_it() {
+        let mut fresh = view(Some(Err(crate::server::NOT_INSTALLED.into())), vec![]);
+        fresh.repos.clear();
+        let (menu, _) = build(&fresh);
+        assert_eq!(
+            labels(&menu["items"])[0..3],
+            ["ubuntu@192.0.2.1 — Runberth not installed", INSTALL_HINT, "---"]
+        );
+        assert_eq!(menu["tooltip"], "Runberth — not installed on the server");
     }
 
     #[test]

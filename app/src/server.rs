@@ -11,6 +11,9 @@ use crate::config::{Server, expand};
 /// The status format this app understands; see `status_json` in the server.
 const FORMAT: u64 = 1;
 pub const RUNBERTH: &str = "/opt/runberth/bin/runberth";
+/// Why status failed when the server answers but has no Runberth, as on a
+/// new server or after a cleanup: the app then offers to install it.
+pub const NOT_INSTALLED: &str = "Runberth is not installed on the server";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Memory {
@@ -207,6 +210,10 @@ pub fn fetch(server: &Server) -> Result<Status, String> {
         .output()
         .map_err(|error| format!("Cannot run ssh: {error}"))?;
     if !output.status.success() {
+        // ssh's own failures (255) mean the server did not answer at all.
+        if output.status.code() != Some(255) && installed(server) == Some(false) {
+            return Err(NOT_INSTALLED.into());
+        }
         return Err(failure(
             server.host.trim(),
             "status",
@@ -215,6 +222,30 @@ pub fn fetch(server: &Server) -> Result<Status, String> {
         ));
     }
     Status::parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Whether the server has Runberth's binary, asked without sudo, which a
+/// missing sudoers rule would refuse; None when the answer is unclear.
+pub fn installed(server: &Server) -> Option<bool> {
+    if server.is_local() {
+        return Some(Path::new(RUNBERTH).exists());
+    }
+    let mut args = options(server, socket_dir().as_deref());
+    args.extend(["-p".to_owned(), server.port.to_string()]);
+    args.push(format!("{}@{}", server.user, server.host.trim()));
+    args.extend(["test".to_owned(), "-x".to_owned(), RUNBERTH.to_owned()]);
+    let status = Command::new(ssh_program())
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Why `runberth COMMAND` failed on the server, from ssh's exit code and the

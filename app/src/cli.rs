@@ -5,7 +5,7 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::Stdio;
 
-use crate::{config, github, init, install, report, server, settings, token};
+use crate::{config, github, init, install, packages, report, server, settings, token};
 
 const USAGE: &str = "Usage: runberth COMMAND
 
@@ -17,6 +17,8 @@ Runs Runberth commands on the server named in the desktop app's settings.
   disconnect OWNER/REPO [--github-removed]
                                 remove a repository's runner
   status [--watch [SECONDS]]    the server's memory, lock holder, and runners
+  packages [add NAME...]        list the apt packages Runberth installed on the
+                                server, or install more that workflows need
   logs OWNER/REPO [--follow] [--lines N]
                                 a repository's lock notes and runner journal
   cleanup [--execute [--github-removed]]
@@ -48,6 +50,7 @@ enum Parsed<'a> {
     Run(Vec<&'a str>, bool),
     Install(install::Options),
     Init(init::Options),
+    Packages(packages::Request),
     Config(Vec<&'a str>),
     Report,
     Print(String, i32),
@@ -184,6 +187,11 @@ fn parse(args: &[String]) -> Option<Parsed<'_>> {
         ["install" | "update", "--help" | "-h"] => Some(Parsed::Print(install::USAGE.to_owned(), 0)),
         ["config", "--help" | "-h"] => Some(Parsed::Print(CONFIG_USAGE.to_owned(), 0)),
         ["init", "--help" | "-h"] => Some(Parsed::Print(init::USAGE.to_owned(), 0)),
+        ["packages", "--help" | "-h"] => Some(Parsed::Print(packages::USAGE.to_owned(), 0)),
+        ["packages", rest @ ..] => match packages::parse(rest) {
+            Ok(request) => Some(Parsed::Packages(request)),
+            Err(error) => Some(Parsed::Print(error, 2)),
+        },
         ["init", options @ ..] => match init::parse(options) {
             Ok(options) => Some(Parsed::Init(options)),
             Err(error) => Some(Parsed::Print(error, 2)),
@@ -217,6 +225,13 @@ pub fn run(args: &[String]) -> Option<i32> {
         }
         Parsed::Report => Some(report_problem()),
         Parsed::Config(options) => Some(configure(&options).map_or_else(
+            |error| {
+                eprintln!("runberth: {error}");
+                1
+            },
+            |()| 0,
+        )),
+        Parsed::Packages(request) => Some(packages::run(&request).map_or_else(
             |error| {
                 eprintln!("runberth: {error}");
                 1
@@ -309,6 +324,7 @@ mod tests {
             Some(Parsed::Config(options)) => Some((vec![format!("config {}", options.join(" "))], false)),
             Some(Parsed::Report) => Some((vec!["report".into()], false)),
             Some(Parsed::Init(_)) => Some((vec!["init".into()], false)),
+            Some(Parsed::Packages(request)) => Some((vec![format!("packages {request:?}")], false)),
             None => None,
         }
     }
@@ -325,6 +341,12 @@ mod tests {
         assert!(!parsed("logs o/r --follow").unwrap().1);
         assert_eq!(parsed("update").unwrap().0, ["install update=true"]);
         assert_eq!(parsed("init --print").unwrap().0, ["init"]);
+        assert_eq!(parsed("packages").unwrap().0, ["packages List"]);
+        assert_eq!(
+            parsed("packages add gcc").unwrap().0,
+            [r#"packages Add(["gcc"])"#]
+        );
+        assert_eq!(parsed("packages add -y").unwrap().0, ["print 2"]);
         assert_eq!(parsed("init --help").unwrap().0, ["print 0"]);
         assert_eq!(parsed("init --label").unwrap().0, ["print 2"]);
         assert_eq!(parsed("config --host h").unwrap().0, ["config --host h"]);

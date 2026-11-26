@@ -3,7 +3,9 @@
 //! tray menu, and announces finished runs. The native side (native/) owns
 //! the UI loop, the tray icon, its menu, and notifications.
 
-use crate::{cli, config, github, login, menu, native, report, runs, server, settings, token, updates};
+use crate::{
+    cli, config, github, install, login, menu, native, report, runs, server, settings, token, updates,
+};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_int};
 use std::io::Write;
@@ -50,6 +52,12 @@ static LOGIN: AtomicI32 = AtomicI32::new(-1);
 static SPARKLE: AtomicBool = AtomicBool::new(false);
 /// Connections and disconnections in progress: repository and verb.
 static OPERATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// Whether the server in the settings has Runberth: 1 yes, 0 no, -1 not
+/// known, as while it does not answer. Settings enables Install with it.
+static INSTALLED: AtomicI32 = AtomicI32::new(-1);
+/// An install handed to Terminal, because sudo asked for a password: the
+/// app says it finished once the server has Runberth.
+static INSTALLING_IN_TERMINAL: AtomicBool = AtomicBool::new(false);
 /// The server cleanup's latest line while it runs.
 static CLEANUP: Mutex<Option<String>> = Mutex::new(None);
 /// The server a cleanup removed Runberth from, until it answers again: its
@@ -108,7 +116,7 @@ fn perform(action: Action) {
         Action::CheckUpdates => wake(Wake::CheckUpdates),
         Action::Connect(repo) => start_operation("connect", repo),
         Action::Logs(repo) => show_logs(repo),
-        Action::UpdateServer => run_in_terminal("update"),
+        Action::UpdateServer => run_in_terminal(&["update"]),
         Action::Report => report_problem(),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
         Action::Quit => {
@@ -162,6 +170,12 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
+        "install-server" => match install_arguments(&value) {
+            Ok(args) => in_background(move || install_in_app(&args)),
+            Err(error) => native::settings_status(
+                &json!({"install": error, "install_ok": false, "install_done": true}).to_string(),
+            ),
+        },
         "cleanup-preview" => in_background(|| {
             let status = match run_on_server(&["cleanup"], false) {
                 Ok(plan) => json!({"cleanup_plan": String::from_utf8_lossy(&plan).trim_end()}),
@@ -283,10 +297,34 @@ fn set_cleanup(step: Option<String>) {
     wake(Wake::Redraw);
 }
 
+/// Passes each non-empty line of `output` to `line`, as it arrives. A
+/// carriage return ends a line too: apt and dpkg redraw their progress,
+/// "(Reading database ... 45%", with one, and as one line those updates
+/// would fill a status line many lines tall.
+fn each_line(output: impl std::io::Read, mut line: impl FnMut(&str)) {
+    use std::io::Read;
+    let mut current = Vec::new();
+    let mut emit = |current: &mut Vec<u8>| {
+        let text = String::from_utf8_lossy(current);
+        let text = text.trim();
+        if !text.is_empty() {
+            line(text);
+        }
+        current.clear();
+    };
+    for byte in std::io::BufReader::new(output).bytes().map_while(Result::ok) {
+        if byte == b'\n' || byte == b'\r' {
+            emit(&mut current);
+        } else {
+            current.push(byte);
+        }
+    }
+    emit(&mut current);
+}
+
 /// Runs `runberth REMOTE...` on the server like run_on_server, passing each
 /// line it prints to `line` as it arrives, for work that takes minutes.
 fn stream_on_server(remote: &[&str], token: bool, mut line: impl FnMut(&str)) -> Result<(), String> {
-    use std::io::BufRead;
     let config = config::load(&config::settings_path())?;
     let server = config.server().ok_or("No server set")?;
     let token = if token { Some(token::read(&config)?) } else { None };
@@ -314,12 +352,7 @@ fn stream_on_server(remote: &[&str], token: bool, mut line: impl FnMut(&str)) ->
         text
     });
     let stdout = child.stdout.take().expect("piped stdout");
-    for text in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-        let text = text.trim();
-        if !text.is_empty() {
-            line(text);
-        }
-    }
+    each_line(stdout, |text| line(text));
     let status = child.wait().map_err(|error| error.to_string())?;
     let errors = errors.join().unwrap_or_default();
     if status.success() {
@@ -370,14 +403,20 @@ fn run_on_server(remote: &[&str], token: bool) -> Result<Vec<u8>, String> {
 
 /// Runs `runberth COMMAND` in a terminal window, where sudo can ask for a
 /// password and the output stays readable.
-fn run_in_terminal(command: &str) {
+/// Runs `runberth ARGS...` in a terminal window, where sudo can ask for a
+/// password and the output stays readable.
+fn run_in_terminal<S: AsRef<str>>(args: &[S]) {
     let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
     let Ok(executable) = std::env::current_exe() else {
         return;
     };
+    let shown: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    let quoted: Vec<String> = shown.iter().map(|arg| quote(arg)).collect();
+    let command = shown.first().copied().unwrap_or("runberth");
     let line = format!(
-        "{} {command}; echo; echo 'Press Return to close this window.'; read _",
-        quote(&executable.display().to_string())
+        "{} {}; echo; echo 'Press Return to close this window.'; read _",
+        quote(&executable.display().to_string()),
+        quoted.join(" ")
     );
     if cfg!(target_os = "macos") {
         // Terminal runs a .command file it is asked to open.
@@ -413,7 +452,7 @@ fn run_in_terminal(command: &str) {
     if !opened {
         native::notify(
             "No terminal found",
-            &format!("Run `runberth {command}` in a terminal"),
+            &format!("Run `runberth {}` in a terminal", shown.join(" ")),
             "",
         );
     }
@@ -469,8 +508,114 @@ fn show_settings() {
         "version": env!("CARGO_PKG_VERSION"),
         "path": path.display().to_string(),
         "error": error,
+        "installed": INSTALLED.load(Ordering::Relaxed),
     });
     native::show_settings(&window.to_string());
+}
+
+/// Runs `runberth install` without a terminal, showing each line it prints
+/// in Settings as it arrives, as the cleanup does. When sudo on the server
+/// asks for a password, which needs a terminal, it hands the install to
+/// Terminal instead.
+fn install_in_app(args: &[String]) {
+    let result = run_self_streaming(args, |line| {
+        native::settings_status(&json!({"install_progress": line}).to_string());
+    });
+    match result {
+        Err(output) if needs_password(&output) => {
+            INSTALLING_IN_TERMINAL.store(true, Ordering::Relaxed);
+            native::settings_status(
+                &json!({"install_progress": "sudo asks for the server's password: continue in Terminal"})
+                    .to_string(),
+            );
+            run_in_terminal(args);
+        }
+        result => finish_install(result.map_err(|output| last_line(&output))),
+    }
+    wake(Wake::Refresh);
+}
+
+fn finish_install(result: Result<(), String>) {
+    let (message, ok) = match result {
+        Ok(()) => ("Runberth is installed on the server".to_owned(), true),
+        Err(error) => (error, false),
+    };
+    native::settings_status(&json!({"install": message, "install_ok": ok, "install_done": true}).to_string());
+    native::notify(
+        if ok {
+            "Runberth installed"
+        } else {
+            "Install stopped"
+        },
+        &message,
+        "",
+    );
+}
+
+/// Whether sudo on the server refused because it needs a password, which
+/// it can only ask for in a terminal.
+fn needs_password(output: &str) -> bool {
+    output.contains("a terminal is required") || output.contains("a password is required")
+}
+
+/// The last line that says something, for a short failure message.
+fn last_line(output: &str) -> String {
+    output
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map_or_else(
+            || "The install failed".to_owned(),
+            |line| line.trim_start_matches("runberth: ").to_owned(),
+        )
+}
+
+/// Runs this app's own `runberth ARGS...` with no terminal, passing each
+/// line of its output and errors to `line`; the whole output on failure.
+fn run_self_streaming(args: &[String], mut line: impl FnMut(&str)) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    // One stream, in order: errors are steps' last words.
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"exec "$0" "$@" 2>&1"#)
+        .arg(&executable)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run the install: {error}"))?;
+    let mut output = String::new();
+    let stdout = child.stdout.take().expect("piped stdout");
+    each_line(stdout, |text| {
+        line(text);
+        output.push_str(text);
+        output.push('\n');
+    });
+    let status = child.wait().map_err(|error| error.to_string())?;
+    if status.success() { Ok(()) } else { Err(output) }
+}
+
+/// The `runberth install` arguments for the Settings sheet's choices:
+/// {"swap": 0|2|3|4, "on_demand": bool, "packages": "gcc git"}, checked as
+/// the command checks its own options.
+fn install_arguments(choice: &str) -> Result<Vec<String>, String> {
+    let choice: serde_json::Value =
+        serde_json::from_str(choice).map_err(|_| "Unexpected install options".to_owned())?;
+    let mut args = vec!["install".to_owned()];
+    match choice["swap"].as_u64() {
+        Some(0) | None => {}
+        Some(size) => args.extend(["--swap".to_owned(), size.to_string()]),
+    }
+    let packages = choice["packages"].as_str().unwrap_or("").trim();
+    if !packages.is_empty() {
+        args.extend(["--packages".to_owned(), packages.to_owned()]);
+    }
+    if choice["on_demand"].as_bool() == Some(true) {
+        args.push("--on-demand".to_owned());
+    }
+    let check: Vec<&str> = args.iter().map(String::as_str).collect();
+    install::parse(&check)?;
+    Ok(args)
 }
 
 fn change_settings(form: &str) {
@@ -632,6 +777,17 @@ impl Poller {
         });
         let server = config.server().cloned();
         let result = server.as_ref().map(server::fetch);
+        let installed = match &result {
+            Some(Ok(_)) => 1,
+            Some(Err(error)) if error == server::NOT_INSTALLED => 0,
+            _ => -1,
+        };
+        if INSTALLED.swap(installed, Ordering::Relaxed) != installed {
+            native::settings_status(&json!({"installed": installed}).to_string());
+        }
+        if installed == 1 && INSTALLING_IN_TERMINAL.swap(false, Ordering::Relaxed) {
+            finish_install(Ok(()));
+        }
         let removed = REMOVED.lock().is_ok_and(|mut removed| {
             // Answering again, as after a new install, or another server.
             if removed.as_ref() != server.as_ref() || matches!(result, Some(Ok(_))) {
@@ -903,5 +1059,61 @@ mod tests {
         assert_eq!(poller.remember(Some(&second), Some(&timeout)), None);
         assert_eq!(poller.remember(Some(&first), Some(&timeout)), None);
         assert_eq!(poller.remember(None, None), None);
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    #[test]
+    fn the_install_sheet_becomes_checked_arguments() {
+        assert_eq!(
+            install_arguments(r#"{"swap": 3, "on_demand": true, "packages": " gcc git "}"#).unwrap(),
+            ["install", "--swap", "3", "--packages", "gcc git", "--on-demand"]
+        );
+        assert_eq!(
+            install_arguments(r#"{"swap": 0, "on_demand": false}"#).unwrap(),
+            ["install"]
+        );
+        assert!(
+            install_arguments(r#"{"swap": 7}"#)
+                .unwrap_err()
+                .contains("--swap")
+        );
+        assert!(install_arguments(r#"{"packages": "rm -rf; x"}"#).is_err());
+        assert!(install_arguments("not json").is_err());
+    }
+
+    #[test]
+    fn progress_redrawn_with_carriage_returns_comes_as_separate_lines() {
+        let output = "Removing gcc ...\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 100%\rdone\n\nlast";
+        let mut lines = Vec::new();
+        each_line(output.as_bytes(), |line| lines.push(line.to_owned()));
+        assert_eq!(
+            lines,
+            [
+                "Removing gcc ...",
+                "(Reading database ...",
+                "(Reading database ... 5%",
+                "(Reading database ... 100%",
+                "done",
+                "last"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_password_prompt_moves_the_install_to_terminal() {
+        assert!(needs_password(
+            "sudo: a terminal is required to read the password; either use the -S option"
+        ));
+        assert!(needs_password("sudo: a password is required"));
+        assert!(!needs_password("E: Unable to locate package gcc-99"));
+        assert_eq!(
+            last_line("Downloading Runberth v0.2.3\nrunberth: Preflight failed: 512 MiB of memory\n\n"),
+            "Preflight failed: 512 MiB of memory"
+        );
+        assert_eq!(last_line(""), "The install failed");
     }
 }
