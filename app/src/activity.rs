@@ -42,6 +42,18 @@ pub struct Activity {
     /// Every line the work printed, for Show Output.
     #[serde(skip)]
     pub output: Vec<String>,
+    /// Step n of m, from the work's numbered lines, as `[3/7] Installing
+    /// Runberth`; None from work that prints none, as an older server.
+    pub progress: Option<(u8, u8)>,
+}
+
+/// A numbered step line, as `[3/7] Installing Runberth`: 3, 7, and its name.
+pub fn numbered(line: &str) -> Option<(u8, u8, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let (count, name) = rest.split_once("] ")?;
+    let (number, total) = count.split_once('/')?;
+    let (number, total) = (number.parse().ok()?, total.parse().ok()?);
+    (number >= 1 && number <= total && !name.trim().is_empty()).then(|| (number, total, name.trim()))
 }
 
 impl Activity {
@@ -73,7 +85,10 @@ impl Activity {
     pub fn menu_lines(&self, now: i64) -> Vec<String> {
         match self.finished {
             None => {
-                let mut lines = vec![format!("{}… {}", self.title, clock(now - self.started))];
+                let mut lines = vec![match self.progress {
+                    Some((number, total)) => format!("{} · {number} of {total}", self.title),
+                    None => format!("{}… {}", self.title, clock(now - self.started)),
+                }];
                 if !self.step.is_empty() {
                     lines.push(self.step.clone());
                 }
@@ -86,6 +101,8 @@ impl Activity {
     /// One line, as the Settings status bar shows it.
     pub fn line(&self, now: i64) -> String {
         match self.finished {
+            // The bar beside it shows how far it is.
+            None if self.progress.is_some() => format!("{} · {}", self.title, self.step),
             None if self.step.is_empty() => format!("{}… {}", self.title, clock(now - self.started)),
             None => format!("{}… {} · {}", self.title, clock(now - self.started), self.step),
             Some(finished) => self.outcome(finished),
@@ -140,6 +157,7 @@ impl Activities {
             repo: repo.map(str::to_owned),
             verb: verb.to_owned(),
             output: Vec::new(),
+            progress: None,
         });
         Some(self.next)
     }
@@ -151,8 +169,17 @@ impl Activities {
             if activity.output.len() > KEEP_OUTPUT {
                 activity.output.remove(0);
             }
+            let name = if let Some((number, total, name)) = numbered(step) {
+                activity.progress = Some((number, total));
+                name
+            } else if activity.progress.is_some() {
+                // Between numbered steps, other lines go to the output only.
+                return;
+            } else {
+                step
+            };
             // apt's lines end in "...", and the menu adds its own "…".
-            step.trim_end_matches(['.', ' ', '…'])
+            name.trim_end_matches(['.', ' ', '…'])
                 .clone_into(&mut activity.step);
         }
     }
@@ -320,6 +347,46 @@ mod tests {
         let current = activities.current(11);
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].key, "install");
+    }
+
+    #[test]
+    fn numbered_steps_give_progress_and_a_clean_step() {
+        assert_eq!(
+            numbered("[3/7] Installing Runberth"),
+            Some((3, 7, "Installing Runberth"))
+        );
+        for not in [
+            "[0/7] x",
+            "[8/7] x",
+            "[3/7]",
+            "[a/7] x",
+            "3/7 x",
+            "(Reading database ... 5%",
+        ] {
+            assert_eq!(numbered(not), None, "{not}");
+        }
+        let mut activities = Activities::default();
+        let id = activities
+            .begin("install", "Updating Runberth on the server", None, "", 0)
+            .unwrap();
+        activities.step(id, "[2/7] Downloading Runberth v0.2.5 (runberth-x86_64)");
+        activities.step(id, "Valid Runberth host: vantalter/runberth");
+        let running = &activities.current(42)[0];
+        assert_eq!(running.progress, Some((2, 7)));
+        // The step stays the numbered one's name; the other line is output.
+        assert_eq!(running.step, "Downloading Runberth v0.2.5 (runberth-x86_64)");
+        assert_eq!(running.output.len(), 2);
+        assert_eq!(
+            running.menu_lines(42),
+            [
+                "Updating Runberth on the server · 2 of 7",
+                "Downloading Runberth v0.2.5 (runberth-x86_64)"
+            ]
+        );
+        assert_eq!(
+            running.line(42),
+            "Updating Runberth on the server · Downloading Runberth v0.2.5 (runberth-x86_64)"
+        );
     }
 
     #[test]

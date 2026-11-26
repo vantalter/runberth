@@ -339,6 +339,7 @@ fn activity_lines() -> Vec<serde_json::Value> {
                 "ok": activity.ok,
                 "line": activity.line(now),
                 "output": activity.has_output(),
+                "progress": activity.progress.map(|(number, total)| [number, total]),
             })
         })
         .collect()

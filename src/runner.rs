@@ -397,7 +397,9 @@ pub fn install(
     if system::is_symlink(&runner_dir) {
         bail!("Refusing symlink: {}", runner_dir.display());
     }
+    use crate::progress::{CONNECT, step};
     if registered_runner(&runner_dir, &entry.repo)? {
+        step(4, CONNECT, "Checking the registered runner");
         println!(
             "{} runner is already registered; checking hooks and service",
             entry.repo
@@ -408,9 +410,11 @@ pub fn install(
             runner_dir.display()
         );
     } else {
+        step(4, CONNECT, "Downloading and registering the runner");
         register(entry, account, host, api, registry)?;
     }
 
+    step(5, CONNECT, "Installing the runner's service");
     let dir = runner_dir.display().to_string();
     system::run_command(&mut as_user(
         &entry.user,
@@ -429,6 +433,7 @@ pub fn install(
         0o644,
     )?;
     system::run("systemctl", &["daemon-reload"])?;
+    step(6, CONNECT, "Starting the runner");
     if crate::dock::on_demand() {
         // The dock starts it when work arrives; restart the dock to add it.
         system::run("systemctl", &["disable", &unit])?;

@@ -290,6 +290,8 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSMutableArray<NSTextField *> *barLabels;
 @property NSMutableArray<NSImageView *> *barIcons;
 @property NSMutableArray<NSProgressIndicator *> *barSpinners;
+/* How far the work is, from its numbered steps, at the bar's right end. */
+@property NSMutableArray<NSProgressIndicator *> *barMeters;
 /* The activity the bar shows, when it has output to open on a click. */
 @property NSNumber *barOutput;
 @property BOOL installRunning, cleanupRunning;
@@ -669,6 +671,13 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
         icon.image = image;
         icon.contentTintColor = color;
         icon.hidden = image == nil;
+        // Steps done, as `[3/7]` gives: two of seven finished, the third
+        // under way.
+        NSArray *progress = spinning ? running[@"progress"] : nil;
+        NSProgressIndicator *meter = self.barMeters[index];
+        meter.hidden = ![progress isKindOfClass:NSArray.class];
+        if (!meter.hidden)
+            meter.doubleValue = ([progress[0] doubleValue] - 1 + 0.5) / [progress[1] doubleValue];
         NSProgressIndicator *spinner = self.barSpinners[index];
         spinner.hidden = !spinning;
         if (spinning)
@@ -807,7 +816,14 @@ static NSString *shellQuoted(NSString *path) {
 /* One tab's copy of the status bar, which `showBar` keeps in step: a
  * symbol in a slot of its own, so the text never moves, then the line. */
 - (NSView *)activityBar {
-    NSTextField *label = statusLine(484);
+    NSTextField *label = statusLine(376);
+    NSProgressIndicator *meter = [[NSProgressIndicator alloc] init];
+    meter.style = NSProgressIndicatorStyleBar;
+    meter.indeterminate = NO;
+    meter.controlSize = NSControlSizeSmall;
+    meter.minValue = 0;
+    meter.maxValue = 1;
+    meter.hidden = YES;
     NSImageView *icon = [[NSImageView alloc] init];
     icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:NSFont.smallSystemFontSize
                                                                                weight:NSFontWeightRegular];
@@ -835,14 +851,18 @@ static NSString *shellQuoted(NSString *path) {
     // The symbol centred on the text's capitals, not on the label's box,
     // which is taller than its line.
     NSView *bar = [[NSView alloc] init];
-    for (NSView *part in @[ slot, label ]) {
+    for (NSView *part in @[ slot, label, meter ]) {
         part.translatesAutoresizingMaskIntoConstraints = NO;
         [bar addSubview:part];
     }
     [NSLayoutConstraint activateConstraints:@[
         [slot.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
         [label.leadingAnchor constraintEqualToAnchor:slot.trailingAnchor constant:6],
-        [label.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
+        // The meter keeps its place, shown or not, so the text never moves.
+        [meter.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:10],
+        [meter.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
+        [meter.widthAnchor constraintEqualToConstant:100],
+        [meter.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor],
         [label.topAnchor constraintEqualToAnchor:bar.topAnchor],
         [label.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor],
         [slot.centerYAnchor constraintEqualToAnchor:label.firstBaselineAnchor
@@ -856,6 +876,9 @@ static NSString *shellQuoted(NSString *path) {
     [self.barLabels addObject:label];
     [self.barIcons addObject:icon];
     [self.barSpinners addObject:spinner];
+    if (!self.barMeters)
+        self.barMeters = [NSMutableArray array];
+    [self.barMeters addObject:meter];
     // A click opens everything the work printed, as Show Output does.
     [bar addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(barClicked:)]];
     return bar;

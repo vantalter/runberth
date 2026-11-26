@@ -703,6 +703,7 @@ mod tests {
             repo: Some(repo.into()),
             verb: verb.into(),
             output: vec![],
+            progress: None,
         };
         busy.activities = vec![
             activity(1, "o/r", "Disconnecting", "Disconnecting r", ""),
@@ -841,6 +842,7 @@ mod tests {
             repo: None,
             verb: String::new(),
             output: vec![],
+            progress: None,
         }];
         let (menu, _) = build(&cleaning);
         // A server without Runberth still spins while work runs on it.

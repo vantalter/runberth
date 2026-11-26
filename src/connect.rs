@@ -11,6 +11,7 @@ use crate::github::GitHub;
 use crate::host::HostConfig;
 use crate::packages;
 use crate::paths;
+use crate::progress::{self, CONNECT, SYNC};
 use crate::registry::Registry;
 use crate::runner;
 use crate::system::{self, signals};
@@ -29,9 +30,11 @@ pub fn connect(repo: &str) -> Result<()> {
     let token = system::read_token()?;
     let host = HostConfig::load(config)?;
     let api = GitHub::new(token);
+    progress::step(1, CONNECT, "Checking the repository's opt-in");
     let opt_in = verify(repo, &host, &api)?;
     println!("Verified private opt-in: {repo} -> {}", host.runberth);
 
+    progress::step(2, CONNECT, "Preparing the runner's account");
     let registry = Registry::host();
     let entry = registry.register_runner(repo)?;
     if system::lookup_user(&entry.user)?.is_none() {
@@ -61,6 +64,7 @@ pub fn connect(repo: &str) -> Result<()> {
     );
 
     // Before the runner starts, so its first job finds them.
+    progress::step(3, CONNECT, "Installing the repository's packages");
     packages::request(&registry, repo, &opt_in.packages)?.print(repo);
     registry.set_manifest(repo, Some(&opt_in.sha))?;
 
@@ -85,7 +89,9 @@ pub fn sync(repo: &str) -> Result<()> {
     }
     let token = system::read_token()?;
     let host = HostConfig::load(Path::new(paths::HOST_CONFIG))?;
+    progress::step(1, SYNC, "Checking the repository's opt-in");
     let opt_in = verify(repo, &host, &GitHub::new(token))?;
+    progress::step(2, SYNC, "Updating the repository's packages");
     packages::request(&registry, repo, &opt_in.packages)?.print(repo);
     registry.set_manifest(repo, Some(&opt_in.sha))?;
     Ok(())

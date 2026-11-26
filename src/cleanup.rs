@@ -268,7 +268,6 @@ pub fn delete_github_runner(api: &dyn Api, repo: &str, id: u64) -> Result<()> {
 
 fn remove_swap(swap: &Option<SwapEntry>) -> Result<()> {
     let Some(swap) = swap else { return Ok(()) };
-    println!("Removing the swap file");
     if swap.path != paths::SWAP_FILE || system::is_symlink(Path::new(&swap.path)) {
         bail!("Unexpected managed path: {}", swap.path);
     }
@@ -423,12 +422,16 @@ pub fn disconnect(repo: &str, api: Option<&dyn Api>, github_removed: bool) -> Re
         entry.user,
         entry.home
     );
+    use crate::progress::{DISCONNECT, step};
+    step(1, DISCONNECT, "Stopping the runner");
     if let Some(unit) = &runner.unit {
         system::run("systemctl", &["stop", unit])?;
     }
+    step(2, DISCONNECT, "Removing its GitHub registration");
     if let (false, Some(api)) = (github_removed, api) {
         unregister(api, runner)?;
     }
+    step(3, DISCONNECT, "Removing its service and account");
     if let Some(unit) = &runner.unit {
         remove_service(unit)?;
         system::run("systemctl", &["daemon-reload"])?;
@@ -444,6 +447,7 @@ pub fn disconnect(repo: &str, api: Option<&dyn Api>, github_removed: bool) -> Re
     // Its packages go once no other repository or the host needs them. The
     // runner is already gone, so a failure here only leaves packages behind
     // for cleanup.
+    step(4, DISCONNECT, "Removing packages nothing needs");
     let registry = crate::registry::Registry::host();
     match crate::packages::request(&registry, repo, &[]) {
         Ok(report) => report.print(repo),
@@ -474,8 +478,9 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
     // before anything else.
     // Each step says what it does before it starts: the desktop app shows
     // these lines while a cleanup of several minutes runs.
+    use crate::progress::{CLEANUP, step};
+    step(1, CLEANUP, "Stopping the on-demand dock");
     if crate::dock::on_demand() {
-        println!("Stopping the on-demand dock");
         system::run("systemctl", &["disable", "--now", crate::dock::DOCK_UNIT])?;
         system::remove_file_if_present(&crate::dock::unit_path())?;
         system::run("systemctl", &["daemon-reload"])?;
@@ -483,9 +488,7 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
 
     // Stop all jobs before removing registrations and files. Never execute a
     // user-writable svc.sh as root; use the verified systemd unit names.
-    if !inventory.runners.is_empty() {
-        println!("Stopping the runners");
-    }
+    step(2, CLEANUP, "Stopping the runners");
     for unit in inventory
         .runners
         .iter()
@@ -508,6 +511,7 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
         None
     };
 
+    step(3, CLEANUP, "Removing the runners' GitHub registrations");
     if let (false, Some(api)) = (github_removed, api) {
         for runner in &inventory.runners {
             unregister(api, runner)?;
@@ -523,14 +527,14 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
     if !inventory.runners.is_empty() {
         system::run("systemctl", &["daemon-reload"])?;
     }
-    if !inventory.runners.is_empty() {
-        println!("Removing the runners' accounts and caches");
-    }
+    step(4, CLEANUP, "Removing the runners' accounts and caches");
     for runner in &inventory.runners {
         remove_account(&runner.entry)?;
     }
 
+    step(5, CLEANUP, "Removing the swap file");
     remove_swap(&inventory.swap)?;
+    step(6, CLEANUP, "Removing the packages Runberth installed");
     remove_packages(&inventory.packages)?;
     match sudoers_rule() {
         Some(true) => system::remove_file_if_present(Path::new(SUDOERS))?,
@@ -538,7 +542,7 @@ pub fn execute(inventory: &Inventory, api: Option<&dyn Api>, github_removed: boo
         None => {}
     }
     let shared = has_shared_marker(&inventory.root)?;
-    println!("Removing Runberth's files");
+    step(7, CLEANUP, "Removing Runberth's files");
     if shared {
         system::remove_tree(Path::new(paths::OPT))?;
         system::remove_tree(Path::new(paths::STATE_ROOT))?;

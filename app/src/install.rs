@@ -257,6 +257,7 @@ elif [[ ! -f host.json ]]; then
   fi
   exit 1
 fi
+echo "[4/7] Checking the server"
 ./runberth --version
 ./runberth check-host --config host.json
 if [[ "$skip_preflight" == true ]]; then
@@ -264,7 +265,9 @@ if [[ "$skip_preflight" == true ]]; then
 else
   ./runberth preflight
 fi
+echo "[5/7] Installing Runberth"
 $sudo_cmd ./runberth install-host --config host.json
+echo "[6/7] Applying the options"
 if [[ -n "$swap" ]]; then
   $sudo_cmd /opt/runberth/bin/runberth add-swap "$swap"
 fi
@@ -279,6 +282,7 @@ elif systemctl is-active --quiet runberth-dock.service 2>/dev/null; then
   # The dock keeps running the binary it started with.
   $sudo_cmd systemctl restart runberth-dock.service
 fi
+echo "[7/7] Installing the sudoers rule"
 if [[ "$sudoers" == true ]]; then
   printf '%s\n' "$sudoers_rule" > sudoers.runberth
   $sudo_cmd visudo -cf sudoers.runberth
@@ -286,6 +290,15 @@ if [[ "$sudoers" == true ]]; then
   echo "Installed /etc/sudoers.d/runberth"
 fi
 "#;
+
+/// The steps install and update take: three here, four in the script on
+/// the server, which prints its own, as `[4/7] Checking the server`.
+const STEPS: u8 = 7;
+
+/// Prints step `number`, as the desktop app reads it for its progress bar.
+fn step(number: u8, name: &str) {
+    println!("[{number}/{STEPS}] {name}");
+}
 
 fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -340,7 +353,7 @@ fn binary(options: &Options, asset: &str) -> Result<Vec<u8>, String> {
         .version
         .clone()
         .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
-    println!("Downloading Runberth {tag} ({asset})");
+    step(2, &format!("Downloading Runberth {tag} ({asset})"));
     let base = format!("{RELEASES}/{tag}");
     let checksum = String::from_utf8_lossy(&download(&format!("{base}/{asset}.sha256"))?).into_owned();
     let expected = expected_digest(&checksum).ok_or("Unreadable checksum in the release")?;
@@ -409,6 +422,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         target.clone()
     };
 
+    step(1, "Checking the server's processor");
     // The server's processor picks the release binary.
     let machine = if server.is_local() {
         Command::new("uname").arg("-m").output()
@@ -490,6 +504,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     if new_config.is_some() {
         files.push(staging.join("host.json"));
     }
+    step(3, "Copying it to the server");
     let status = Command::new("scp")
         .arg("-q")
         // The same ssh as every other request.
