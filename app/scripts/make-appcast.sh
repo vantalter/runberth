@@ -25,6 +25,11 @@ signature=$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$tools/bin/sign_update" --ed-k
 previous=$(git -C "$root" describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
 notes=$(git -C "$root" log --no-merges --format=%s ${previous:+"$previous..HEAD"} |
     grep -v '^Release [0-9]' |
+    # Conventional Commits types: changes users notice lose their prefix, the
+    # rest (release pull requests, docs, CI, tests, …) are left out.
+    grep -Ev '^(chore|docs|ci|test|build|style|refactor)(\([^)]*\))?!?:' |
+    sed -E 's/^(feat|fix|perf|revert|deps)(\([^)]*\))?!?: *//' |
+    awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) }' |
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's|.*|<li>&</li>|')
 
 cat <<EOF

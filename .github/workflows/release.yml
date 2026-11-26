@@ -3,12 +3,20 @@ name: Release
 # A tag such as v0.2.0, matching the workspace version in Cargo.toml,
 # publishes the static Linux server binaries for x86_64 and arm64, the macOS
 # app with its Sparkle update feed, and the Linux tray app's packages.
-# Releases are manual: push the tag by hand, as in README.md#releasing. A tag
-# such as v0.2.0-rc.1 publishes a pre-release of the version in Cargo.toml,
-# for testing before the release.
+# release-please.yml runs it after merging a release pull request, with the
+# draft release it created; pushing a tag by hand also runs it, for example to
+# retry, and creates the release. A tag such as v0.2.0-rc.1, pushed by hand,
+# publishes a pre-release of the version in Cargo.toml, for testing before the
+# release. See README.md#releasing.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to release, already pushed
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,10 +30,12 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - id: check
         name: Tag matches Cargo.toml
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           # v0.2.0 releases 0.2.0; v0.2.0-rc.1 is a pre-release of it.
@@ -251,7 +261,7 @@ jobs:
           merge-multiple: true
       # The one-line installer for the command-line tool.
       - run: cp scripts/install-cli.sh release-files/install.sh
-      - name: Create GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -259,16 +269,29 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          # Which file is which, above the notes GitHub generates from the
-          # merged pull requests.
+          # Which file is which, above the changelog.
           notes="$RUNNER_TEMP/notes.md"
           sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{TAG}}/$TAG/g" .github/release-notes.md > "$notes"
           cd release-files
           sha256sum * > SHA256SUMS
-          # The app's update feed and `latest` downloads read the latest
-          # release, which GitHub never sets to a pre-release.
-          if [ "$PRERELEASE" = true ]; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # release-please's draft: the files go on first, so the app's
+            # update feed and `latest` downloads never find a release without
+            # them, then the guide goes above its changelog and it is published.
+            gh release upload "$TAG" * --clobber
+            body=$(gh release view "$TAG" --json body -q .body)
+            # A re-run finds the guide already there.
+            case "$body" in
+              "## Which file do I need?"*) printf '%s\n' "$body" > "$RUNNER_TEMP/full.md" ;;
+              *) { cat "$notes"; echo; printf '%s\n' "$body"; } > "$RUNNER_TEMP/full.md" ;;
+            esac
+            gh release edit "$TAG" --title "Runberth $VERSION" --notes-file "$RUNNER_TEMP/full.md" --draft=false
+          elif [ "$PRERELEASE" = true ]; then
+            # The app's update feed and `latest` downloads read the latest
+            # release, which GitHub never sets to a pre-release.
             gh release create "$TAG" * --prerelease --generate-notes --notes-file "$notes" --title "Runberth $TAG"
           else
+            # A tag pushed by hand: the notes GitHub generates from the merged
+            # pull requests stand in for the changelog.
             gh release create "$TAG" * --generate-notes --notes-file "$notes" --title "Runberth $VERSION"
           fi
