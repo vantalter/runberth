@@ -50,8 +50,48 @@ static ACTIONS: Mutex<Option<HashMap<u32, Action>>> = Mutex::new(None);
 static WAKE: OnceLock<Mutex<Sender<Wake>>> = OnceLock::new();
 static LOGIN: AtomicI32 = AtomicI32::new(-1);
 static SPARKLE: AtomicBool = AtomicBool::new(false);
-/// Connections and disconnections in progress: repository and verb.
-static OPERATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// Connections, disconnections, and syncs in progress, with each one's
+/// latest line from the server.
+static OPERATIONS: Mutex<Vec<menu::Operation>> = Mutex::new(Vec::new());
+
+/// Starts showing an operation on `repo`, unless one already runs there.
+fn begin_operation(repo: &str, verb: &str) -> bool {
+    let Ok(mut operations) = OPERATIONS.lock() else {
+        return false;
+    };
+    if operations.iter().any(|operation| operation.repo == repo) {
+        return false;
+    }
+    operations.push(menu::Operation {
+        repo: repo.to_owned(),
+        verb: verb.to_owned(),
+        step: String::new(),
+    });
+    true
+}
+
+/// Shows the server's latest line for the operation on `repo`.
+fn operation_step(repo: &str, step: &str) {
+    if let Ok(mut operations) = OPERATIONS.lock() {
+        if let Some(operation) = operations.iter_mut().find(|operation| operation.repo == repo) {
+            operation.step = step.to_owned();
+        }
+    }
+    wake(Wake::Redraw);
+}
+
+fn end_operation(repo: &str) {
+    if let Ok(mut operations) = OPERATIONS.lock() {
+        operations.retain(|operation| operation.repo != repo);
+    }
+}
+
+fn current_operations() -> Vec<menu::Operation> {
+    OPERATIONS
+        .lock()
+        .map(|operations| operations.clone())
+        .unwrap_or_default()
+}
 /// Whether the server in the settings has Runberth: 1 yes, 0 no, -1 not
 /// known, as while it does not answer. Settings enables Install with it.
 static INSTALLED: AtomicI32 = AtomicI32::new(-1);
@@ -236,15 +276,12 @@ fn start_operation(command: &'static str, repo: String) {
     } else {
         "Disconnecting"
     };
-    {
-        let Ok(mut operations) = OPERATIONS.lock() else {
-            return;
-        };
-        if operations.iter().any(|(name, _)| *name == repo) {
-            return;
-        }
-        operations.push((repo.clone(), verb.to_owned()));
+    if !begin_operation(&repo, verb) {
+        return;
     }
+    // It takes a minute or more: say it started, and where to follow it.
+    let (title, body) = start_notice(command, &repo);
+    native::notify(&title, &body, &format!("https://github.com/{repo}"));
     wake(Wake::Refresh);
     in_background(move || {
         let result = run_operation(command, &repo);
@@ -267,12 +304,26 @@ fn start_operation(command: &'static str, repo: String) {
             _ => format!("https://github.com/{repo}/settings/actions/runners"),
         };
         native::notify(&title, &body, &page);
-        if let Ok(mut operations) = OPERATIONS.lock() {
-            operations.retain(|(name, _)| *name != repo);
-        }
+        end_operation(&repo);
         LIST_AGAIN.store(true, Ordering::Relaxed);
         wake(Wake::Refresh);
     });
+}
+
+/// The notification that a connection or disconnection started.
+fn start_notice(command: &str, repo: &str) -> (String, String) {
+    let name = runs::short(repo);
+    if command == "connect" {
+        (
+            format!("Connecting {name}"),
+            "This takes a minute or so; the menu shows each step".to_owned(),
+        )
+    } else {
+        (
+            format!("Disconnecting {name}"),
+            "Removing its runner from the server and GitHub; the menu shows each step".to_owned(),
+        )
+    }
 }
 
 /// Whether a repository's manifest changed since the server applied it, and
@@ -284,23 +335,20 @@ fn needs_sync(applied: &str, current: &str, tried: Option<&String>) -> bool {
 /// Applies a repository's changed manifest on the server, then says what
 /// changed: the server's "Installed for…", "Removed…", and "Kept…" lines.
 fn start_sync(repo: String) {
-    {
-        let Ok(mut operations) = OPERATIONS.lock() else {
-            return;
-        };
-        if operations.iter().any(|(name, _)| *name == repo) {
-            return;
-        }
-        operations.push((repo.clone(), "Syncing".to_owned()));
+    if !begin_operation(&repo, "Syncing") {
+        return;
     }
     wake(Wake::Redraw);
     in_background(move || {
         let name = runs::short(&repo);
-        let (title, body) = match run_on_server(&["sync", &repo], true) {
-            Ok(output) => (
-                format!("Synced {name}"),
-                sync_summary(&String::from_utf8_lossy(&output)),
-            ),
+        let mut output = String::new();
+        let result = stream_on_server(&["sync", &repo], true, |line| {
+            operation_step(&repo, line);
+            output.push_str(line);
+            output.push('\n');
+        });
+        let (title, body) = match result {
+            Ok(()) => (format!("Synced {name}"), sync_summary(&output)),
             Err(error) => (format!("Cannot sync {name}"), error),
         };
         native::notify(
@@ -308,9 +356,7 @@ fn start_sync(repo: String) {
             &body,
             &format!("https://github.com/{repo}/blob/HEAD/.github/runberth.json"),
         );
-        if let Ok(mut operations) = OPERATIONS.lock() {
-            operations.retain(|(name, _)| *name != repo);
-        }
+        end_operation(&repo);
         wake(Wake::Refresh);
     });
 }
@@ -342,9 +388,8 @@ fn run_operation(command: &str, repo: &str) -> Result<(), (String, Option<String
             .check_manifest(repo)
             .map_err(|missing| (missing.message, Some(missing.page)))?;
     }
-    run_on_server(&[command, repo], true)
-        .map(drop)
-        .map_err(|error| (error, None))
+    // Each line the server prints is the operation's latest step.
+    stream_on_server(&[command, repo], true, |line| operation_step(repo, line)).map_err(|error| (error, None))
 }
 
 fn cleanup_step() -> Option<String> {
@@ -988,10 +1033,7 @@ impl Poller {
             login: LOGIN.load(Ordering::Relaxed),
             sparkle,
             update: self.update.clone(),
-            operations: OPERATIONS
-                .lock()
-                .map(|operations| operations.clone())
-                .unwrap_or_default(),
+            operations: current_operations(),
             cleanup: cleanup_step(),
             removed,
             candidates: github
@@ -1050,6 +1092,7 @@ fn poll(receiver: Receiver<Wake>) {
                 }
                 Ok(Wake::Redraw) => publish(&View {
                     cleanup: cleanup_step(),
+                    operations: current_operations(),
                     now: runs::now(),
                     ..view.clone()
                 }),
@@ -1203,6 +1246,21 @@ mod install_tests {
                 "done",
                 "last"
             ]
+        );
+    }
+
+    #[test]
+    fn connecting_and_disconnecting_say_they_started() {
+        assert_eq!(
+            start_notice("connect", "vantalter/aerofoil"),
+            (
+                "Connecting aerofoil".to_owned(),
+                "This takes a minute or so; the menu shows each step".to_owned()
+            )
+        );
+        assert_eq!(
+            start_notice("disconnect", "vantalter/aerofoil").0,
+            "Disconnecting aerofoil"
         );
     }
 

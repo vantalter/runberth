@@ -240,9 +240,11 @@ try:
         if new:
             call(owner, "/MenuBar", "com.canonical.dbusmenu", "Event",
                  GLib.Variant("(isvu)", (new[0], "clicked", GLib.Variant("s", ""), 0)))
-        check(wait(lambda: len(notifications) == 2, 10), "a notification when the repository connects")
-        if len(notifications) == 2:
-            check(notifications[1][3] == "Connected new", f"connect notification: {notifications[1][3]}")
+        # One when it starts, one when it ends.
+        check(wait(lambda: len(notifications) == 3, 10), "notifications when connecting starts and ends")
+        if len(notifications) == 3:
+            check(notifications[1][3] == "Connecting new", f"start notification: {notifications[1][3]}")
+            check(notifications[2][3] == "Connected new", f"connect notification: {notifications[2][3]}")
         sent = connected.read_text().strip() if connected.exists() else ""
         token, _, command = sent.partition("|")
         check(token == "test-token", "the token reaches the server on stdin")

@@ -39,6 +39,17 @@ pub struct RepoView {
     pub jobs: HashMap<u64, Vec<Job>>,
 }
 
+/// A connection, disconnection, or sync in progress, which takes a minute or
+/// more on the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Operation {
+    pub repo: String,
+    /// "Connecting", "Disconnecting", or "Syncing".
+    pub verb: String,
+    /// The server's latest line, empty until the first.
+    pub step: String,
+}
+
 #[derive(Clone)]
 pub struct View {
     /// "user@host", or None until the settings name a server.
@@ -55,7 +66,7 @@ pub struct View {
     pub update: updates::Status,
     /// Connections and disconnections in progress: repository and verb,
     /// such as "Connecting".
-    pub operations: Vec<(String, String)>,
+    pub operations: Vec<Operation>,
     /// Private repositories that could be connected, or None without a token.
     pub candidates: Option<Vec<String>>,
     /// While the server is being cleaned up: its latest line, empty at first.
@@ -209,7 +220,7 @@ fn repo_item(
 
 /// Private repositories to connect, which must have .github/runberth.json.
 fn connect_item(builder: &mut Builder, view: &View) -> Value {
-    let busy = |repo: &String| view.operations.iter().any(|(name, _)| name == repo);
+    let busy = |repo: &String| view.operations.iter().any(|operation| operation.repo == *repo);
     let connected = |repo: &String| view.repos.iter().any(|connected| connected.repo == *repo);
     let mut items = Vec::new();
     match &view.candidates {
@@ -257,6 +268,10 @@ fn icon(view: &View) -> (&'static str, usize) {
         Some(Ok(status)) => status,
         _ => return ("offline", active),
     };
+    // Work the app started on the server turns the spinner too.
+    if !view.operations.is_empty() {
+        return ("running", active);
+    }
     // Without a working token there are no results: a broken setup must not
     // look like a quiet server, nor like one that is down.
     if view.token_error.is_some() {
@@ -289,6 +304,17 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     let mut builder = Builder::default();
     let mut items = Vec::new();
     let status = view.server.as_ref().and_then(|server| server.as_ref().ok());
+    // Connecting takes a minute or more: say so above everything, with the
+    // server's latest step.
+    for operation in &view.operations {
+        items.push(builder.info(format!("{} {}…", operation.verb, short(&operation.repo))));
+        if !operation.step.is_empty() {
+            items.push(builder.info(short_line(&operation.step)));
+        }
+    }
+    if !view.operations.is_empty() {
+        items.push(builder.separator());
+    }
     // A cleanup takes minutes: say so above everything, step by step.
     if let Some(step) = &view.cleanup {
         items.push(builder.info("Cleaning up the server…"));
@@ -377,14 +403,9 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
         let operation = view
             .operations
             .iter()
-            .find(|(name, _)| *name == repo.repo)
-            .map(|(_, verb)| verb.as_str());
+            .find(|operation| operation.repo == repo.repo)
+            .map(|operation| operation.verb.as_str());
         items.push(repo_item(&mut builder, repo, status, operation, view.now));
-    }
-    for (repo, verb) in &view.operations {
-        if !view.repos.iter().any(|connected| connected.repo == *repo) {
-            items.push(builder.info(format!("{verb} {repo}…")));
-        }
     }
     if status.is_some() {
         items.push(connect_item(&mut builder, view));
@@ -478,6 +499,14 @@ fn finish(builder: Builder, view: &View, items: Vec<Value>) -> (Value, HashMap<u
             "Runberth — not installed on the server".to_owned()
         }
         "offline" => "Runberth — server unreachable".to_owned(),
+        "running" if !view.operations.is_empty() => {
+            let doing: Vec<String> = view
+                .operations
+                .iter()
+                .map(|operation| format!("{} {}", operation.verb.to_lowercase(), short(&operation.repo)))
+                .collect();
+            format!("Runberth — {}", doing.join(", "))
+        }
         "running" if active == 1 => "Runberth — 1 run in progress".to_owned(),
         "running" if active > 1 => format!("Runberth — {active} runs in progress"),
         "running" => "Runberth — a job is running".to_owned(),
@@ -674,15 +703,31 @@ mod tests {
     #[test]
     fn operations_in_progress_show_in_the_menu() {
         let mut busy = view(Some(Ok(status(vec![]))), vec![]);
+        let operation = |repo: &str, verb: &str, step: &str| Operation {
+            repo: repo.into(),
+            verb: verb.into(),
+            step: step.into(),
+        };
         busy.operations = vec![
-            ("o/r".into(), "Disconnecting".into()),
-            ("o/new".into(), "Connecting".into()),
+            operation("o/r", "Disconnecting", ""),
+            operation("o/new", "Connecting", "Installing runner dependencies: libicu74"),
         ];
         let (menu, _) = build(&busy);
         let top = labels(&menu["items"]);
-        assert_eq!(top[4], "r — disconnecting…");
-        assert!(top.contains(&"Connecting o/new…".to_owned()));
-        assert!(!labels(&menu["items"][4]["children"]).contains(&"Disconnect".to_owned()));
+        // Above everything, with the server's latest step.
+        assert_eq!(
+            top[0..4],
+            [
+                "Disconnecting r…",
+                "Connecting new…",
+                "Installing runner dependencies: libicu74",
+                "---"
+            ]
+        );
+        assert_eq!(menu["icon"], "running");
+        assert_eq!(menu["tooltip"], "Runberth — disconnecting r, connecting new");
+        let repo = find(&menu["items"], "r — disconnecting…");
+        assert!(!labels(&repo["children"]).contains(&"Disconnect".to_owned()));
         assert!(
             labels(&find(&menu["items"], "Connect Repository")["children"])
                 .contains(&"No other private repositories".to_owned())
