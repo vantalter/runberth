@@ -221,6 +221,44 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
     }
 }
 
+/// What a notification about the app's own work says, which the settings'
+/// `notifications` choice decides on, as it does for runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum News {
+    /// Work you started has begun.
+    Started,
+    /// Work ended well.
+    Done,
+    /// Something went wrong.
+    Problem,
+}
+
+impl News {
+    fn ended(ok: bool) -> Self {
+        if ok { Self::Done } else { Self::Problem }
+    }
+
+    /// All announces everything; Failures and fixes only what went wrong;
+    /// Off nothing, as the menu and the Settings status bar say it all.
+    fn wanted(self, choice: config::Notifications) -> bool {
+        match choice {
+            config::Notifications::All => true,
+            config::Notifications::Failures => self == Self::Problem,
+            config::Notifications::Off => false,
+        }
+    }
+}
+
+/// Notifies about the app's own work, as the settings allow.
+fn announce(news: News, title: &str, body: &str, url: &str) {
+    let choice = config::load(&config::settings_path())
+        .map(|config| config.notifications)
+        .unwrap_or_default();
+    if news.wanted(choice) {
+        native::notify(title, body, url);
+    }
+}
+
 /// Shows the activities' change: the menu redraws, and Settings gets them
 /// for its status bar.
 fn activities_changed() {
@@ -267,7 +305,7 @@ fn start_operation(command: &'static str, repo: String) {
     } else {
         "Removing its runner from the server and GitHub; the menu shows each step"
     };
-    native::notify(&title, body, &format!("https://github.com/{repo}"));
+    announce(News::Started, &title, body, &format!("https://github.com/{repo}"));
     in_background(move || {
         let result = run_operation(command, &repo, &activity);
         let (ok, result_line, body) = match (&result, command) {
@@ -289,7 +327,7 @@ fn start_operation(command: &'static str, repo: String) {
             Err((_, Some(page))) => page.clone(),
             _ => format!("https://github.com/{repo}/settings/actions/runners"),
         };
-        native::notify(&result_line, &body, &page);
+        announce(News::ended(ok), &result_line, &body, &page);
         let shown = if ok {
             result_line
         } else {
@@ -330,7 +368,8 @@ fn start_sync(repo: String) {
             Ok(()) => (true, format!("Synced {name}"), sync_summary(&output)),
             Err(error) => (false, format!("Couldn't sync {name}"), error),
         };
-        native::notify(
+        announce(
+            News::ended(ok),
             &title,
             &body,
             &format!("https://github.com/{repo}/blob/HEAD/.github/runberth.json"),
@@ -529,7 +568,8 @@ fn run_in_terminal<S: AsRef<str>>(args: &[S]) {
             .is_ok()
     });
     if !opened {
-        native::notify(
+        announce(
+            News::Problem,
             "No terminal found",
             &format!("Run `runberth {}` in a terminal", shown.join(" ")),
             "",
@@ -558,7 +598,8 @@ fn show_logs(repo: String) {
                 let _ = Command::new("open").arg("-t").arg(&path).spawn();
             }
             Ok(()) => open(&path.display().to_string()),
-            Err(error) => native::notify(
+            Err(error) => announce(
+                News::Problem,
                 &format!("Cannot read logs for {}", runs::short(&repo)),
                 &error,
                 "",
@@ -611,7 +652,7 @@ fn cleanup_server(activity: activity::Handle) {
         Ok(()) => (true, "Removed Runberth from the server".to_owned(), String::new()),
         Err(error) => (false, "Couldn't remove Runberth".to_owned(), error),
     };
-    native::notify(&title, &body, "");
+    announce(News::ended(ok), &title, &body, "");
     activity.finish(ok, &if ok { title } else { format!("{title}: {body}") });
     wake(Wake::Refresh);
 }
@@ -643,7 +684,7 @@ fn finish_install(activity: activity::Handle, result: Result<(), String>) {
         Ok(()) => (true, "Installed Runberth on the server".to_owned(), String::new()),
         Err(error) => (false, "Couldn't install Runberth".to_owned(), error),
     };
-    native::notify(&title, &body, "");
+    announce(News::ended(ok), &title, &body, "");
     activity.finish(ok, &if ok { title } else { format!("{title}: {body}") });
 }
 
@@ -1006,8 +1047,9 @@ impl Poller {
             .any(|repo| repo.runs.as_ref().is_err_and(|error| error == github::REJECTED));
         if rejected {
             token_error = Some(rejected_line());
-            if !self.rejection_announced && config.notifications != config::Notifications::Off {
-                native::notify(
+            if !self.rejection_announced {
+                announce(
+                    News::Problem,
                     "GitHub rejected Runberth's token",
                     "It may have expired. Replace it to see job results again.",
                     "https://github.com/settings/tokens",
@@ -1264,6 +1306,18 @@ mod install_tests {
                 "last"
             ]
         );
+    }
+
+    #[test]
+    fn the_notifications_choice_covers_the_app_s_own_work() {
+        use config::Notifications::{All, Failures, Off};
+        for news in [News::Started, News::Done, News::Problem] {
+            assert!(news.wanted(All), "{news:?}");
+            assert!(!news.wanted(Off), "{news:?}");
+        }
+        assert!(News::Problem.wanted(Failures));
+        assert!(!News::Started.wanted(Failures) && !News::Done.wanted(Failures));
+        assert_eq!(News::ended(false), News::Problem);
     }
 
     #[test]

@@ -94,6 +94,8 @@ pub struct Notice {
     pub body: String,
     pub url: String,
     pub failed: bool,
+    /// It passed where the same workflow on the same branch last failed.
+    pub fixed: bool,
 }
 
 impl Notice {
@@ -102,7 +104,7 @@ impl Notice {
         use crate::config::Notifications;
         match choice {
             Notifications::All => true,
-            Notifications::Failures => self.failed,
+            Notifications::Failures => self.failed || self.fixed,
             Notifications::Off => false,
         }
     }
@@ -128,7 +130,21 @@ fn notice(repo: &str, run: &Run) -> Notice {
         body: body.join(" · "),
         url: run.html_url.clone(),
         failed: failed(run),
+        fixed: false,
     }
+}
+
+/// A workflow on a branch, whose runs replace one another.
+fn lane(repo: &str, run: &Run) -> (String, String, String) {
+    (
+        repo.to_owned(),
+        run.workflow().to_owned(),
+        run.head_branch.clone().unwrap_or_default(),
+    )
+}
+
+fn passed(run: &Run) -> bool {
+    run.conclusion.as_deref() == Some("success")
 }
 
 /// Remembers which runs were last seen unfinished, so each run that finishes
@@ -137,34 +153,61 @@ fn notice(repo: &str, run: &Run) -> Notice {
 #[derive(Default)]
 pub struct Tracker {
     seen: HashMap<String, HashMap<u64, bool>>,
+    /// Workflows on branches whose latest finished run failed, so the next
+    /// one that passes is announced as fixed.
+    failing: HashSet<(String, String, String)>,
 }
 
 impl Tracker {
     pub fn update(&mut self, repo: &str, runs: &[Run]) -> Vec<Notice> {
         let first = !self.seen.contains_key(repo);
         let seen = self.seen.entry(repo.to_owned()).or_default();
-        let mut notices = Vec::new();
+        let mut finished = Vec::new();
         for run in runs {
             let completed = !run.active();
             // A run that started and finished between two refreshes is new
             // and already complete.
             if !first && completed && seen.get(&run.id) != Some(&true) {
-                notices.push(notice(repo, run));
+                finished.push(run);
             }
+        }
+        if first {
+            // The baseline: each lane's latest finished run, newest first.
+            let mut looked = HashSet::new();
+            for run in runs.iter().filter(|run| !run.active()) {
+                let lane = lane(repo, run);
+                if looked.insert(lane.clone()) && failed(run) {
+                    self.failing.insert(lane);
+                }
+            }
+        }
+        // Oldest first, so notifications arrive in the order runs finished,
+        // and a lane's failure comes before the run that fixes it.
+        finished.reverse();
+        let mut notices = Vec::new();
+        for run in finished {
+            let lane = lane(repo, run);
+            let mut notice = notice(repo, run);
+            if failed(run) {
+                self.failing.insert(lane);
+            } else if passed(run) && self.failing.remove(&lane) {
+                notice.fixed = true;
+                notice.title = format!("{} {}: {} passing again", mark(run), short(repo), run.workflow());
+            }
+            notices.push(notice);
         }
         let current: HashSet<u64> = runs.iter().map(|run| run.id).collect();
         seen.retain(|id, _| current.contains(id));
         for run in runs {
             seen.insert(run.id, !run.active());
         }
-        // Oldest first, so notifications arrive in the order runs finished.
-        notices.reverse();
         notices
     }
 
     /// Forget repositories that are no longer connected.
     pub fn retain(&mut self, repos: &[String]) {
         self.seen.retain(|repo, _| repos.contains(repo));
+        self.failing.retain(|(repo, _, _)| repos.contains(repo));
     }
 }
 
@@ -244,21 +287,56 @@ pub mod tests {
         );
         assert_eq!(
             notices,
+            // It passed where the baseline's run failed: a fix.
             [Notice {
-                title: "✓ r: CI passed".into(),
+                title: "✓ r: CI passing again".into(),
                 body: "main · Add a page · 4m".into(),
                 url: "https://github.com/o/r/actions/runs/2".into(),
                 failed: false,
+                fixed: true,
             }]
         );
         use crate::config::Notifications;
         assert!(notices[0].wanted(Notifications::All));
-        assert!(!notices[0].wanted(Notifications::Failures) && !notices[0].wanted(Notifications::Off));
+        // A fix is news under "Failures and fixes" too.
+        assert!(notices[0].wanted(Notifications::Failures) && !notices[0].wanted(Notifications::Off));
         assert!(
             tracker
                 .update("o/r", &[run(2, "completed", Some("success"))])
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_pass_after_a_failure_is_announced_as_fixed() {
+        use crate::config::Notifications;
+        let mut tracker = Tracker::default();
+        // The baseline: CI's latest run on main failed before the app looked.
+        let failed_before = run(1, "completed", Some("failure"));
+        assert!(
+            tracker
+                .update("o/app", std::slice::from_ref(&failed_before))
+                .is_empty()
+        );
+        let fix = run(2, "completed", Some("success"));
+        let notices = tracker.update("o/app", &[fix.clone(), failed_before.clone()]);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].fixed && !notices[0].failed);
+        assert_eq!(notices[0].title, "✓ app: CI passing again");
+        // Failures and fixes: the fix is wanted; an ordinary pass is not.
+        assert!(notices[0].wanted(Notifications::Failures));
+        let ordinary = tracker.update("o/app", &[run(3, "completed", Some("success")), fix.clone()]);
+        assert!(!ordinary[0].fixed && !ordinary[0].wanted(Notifications::Failures));
+        assert!(ordinary[0].wanted(Notifications::All));
+        // A failure and its fix between two refreshes come in that order.
+        let both = tracker.update(
+            "o/app",
+            &[
+                run(5, "completed", Some("success")),
+                run(4, "completed", Some("failure")),
+            ],
+        );
+        assert!(both[0].failed && both[1].fixed);
     }
 
     #[test]

@@ -415,7 +415,7 @@ static NSString *const StoredTokenMask = @"••••••••••••�
 - (NSView *)general {
     self.interval = textField(@"20", 60, self);
     self.notifications = [[NSPopUpButton alloc] init];
-    for (NSArray *choice in @[ @[ @"All finished runs", @"all" ], @[ @"Failed runs only", @"failures" ],
+    for (NSArray *choice in @[ @[ @"Everything", @"all" ], @[ @"Failures and fixes", @"failures" ],
                                @[ @"Off", @"off" ] ]) {
         [self.notifications addItemWithTitle:choice[0]];
         self.notifications.lastItem.representedObject = choice[1];
