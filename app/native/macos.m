@@ -335,6 +335,9 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
 @property NSTextField *commandLineStatus;
 /* Installs the command, or removes the app's link once it is installed. */
 @property NSButton *commandLineButton;
+/* What the button just did, shown until Settings closes: 1 installed,
+ * 2 removed, 0 nothing. */
+@property int commandLineDone;
 @property NSButton *cleanupButton;
 /* The cleanup's progress and result on its status line, and the install's
  * on the line under Test Connection. */
@@ -665,6 +668,18 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     BOOL installed = [self commandLineToolInstalled];
     self.commandLineButton.title = installed ? @"Remove Command Line Tool…" : @"Install Command Line Tool…";
     NSDictionary *existing = [NSFileManager.defaultManager attributesOfItemAtPath:CommandLinePath error:NULL];
+    // What the button just did stays in green, as long as it still holds.
+    if (self.commandLineDone == 1 && installed) {
+        setStatus(self.commandLineStatus, @"✓ Installed: run runberth in Terminal", YES);
+        self.commandLineStatus.textColor = NSColor.systemGreenColor;
+        return;
+    }
+    if (self.commandLineDone == 2 && !installed && !existing) {
+        setStatus(self.commandLineStatus, @"✓ Removed /usr/local/bin/runberth", YES);
+        self.commandLineStatus.textColor = NSColor.systemGreenColor;
+        return;
+    }
+    self.commandLineDone = 0;
     if (installed)
         setStatus(self.commandLineStatus, @"Installed at /usr/local/bin/runberth", YES);
     else if (existing || [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL])
@@ -713,6 +728,7 @@ static NSString *shellQuoted(NSString *path) {
                                                                      shellQuoted(CommandLinePath)]]) {
         return;
     }
+    self.commandLineDone = 1;
     [self refreshCommandLineTool];
 }
 /* Removes only the app's own link; a copy installed another way stays. */
@@ -736,6 +752,7 @@ static NSString *shellQuoted(NSString *path) {
                     } else if (![self runAsAdministrator:[@"rm -f " stringByAppendingString:shellQuoted(CommandLinePath)]]) {
                         return;
                     }
+                    self.commandLineDone = 2;
                     [self refreshCommandLineTool];
                   }];
 }
@@ -778,6 +795,7 @@ static NSString *shellQuoted(NSString *path) {
         [self build];
     // An open window keeps what is being typed; a closed one shows the file.
     if (!self.window.visible) {
+        self.commandLineDone = 0;
         NSDictionary *fields = state[@"fields"];
         self.host.stringValue = fields[@"host"] ?: @"";
         self.user.stringValue = fields[@"user"] ?: @"";
