@@ -297,10 +297,34 @@ fn set_cleanup(step: Option<String>) {
     wake(Wake::Redraw);
 }
 
+/// Passes each non-empty line of `output` to `line`, as it arrives. A
+/// carriage return ends a line too: apt and dpkg redraw their progress,
+/// "(Reading database ... 45%", with one, and as one line those updates
+/// would fill a status line many lines tall.
+fn each_line(output: impl std::io::Read, mut line: impl FnMut(&str)) {
+    use std::io::Read;
+    let mut current = Vec::new();
+    let mut emit = |current: &mut Vec<u8>| {
+        let text = String::from_utf8_lossy(current);
+        let text = text.trim();
+        if !text.is_empty() {
+            line(text);
+        }
+        current.clear();
+    };
+    for byte in std::io::BufReader::new(output).bytes().map_while(Result::ok) {
+        if byte == b'\n' || byte == b'\r' {
+            emit(&mut current);
+        } else {
+            current.push(byte);
+        }
+    }
+    emit(&mut current);
+}
+
 /// Runs `runberth REMOTE...` on the server like run_on_server, passing each
 /// line it prints to `line` as it arrives, for work that takes minutes.
 fn stream_on_server(remote: &[&str], token: bool, mut line: impl FnMut(&str)) -> Result<(), String> {
-    use std::io::BufRead;
     let config = config::load(&config::settings_path())?;
     let server = config.server().ok_or("No server set")?;
     let token = if token { Some(token::read(&config)?) } else { None };
@@ -328,12 +352,7 @@ fn stream_on_server(remote: &[&str], token: bool, mut line: impl FnMut(&str)) ->
         text
     });
     let stdout = child.stdout.take().expect("piped stdout");
-    for text in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-        let text = text.trim();
-        if !text.is_empty() {
-            line(text);
-        }
-    }
+    each_line(stdout, |text| line(text));
     let status = child.wait().map_err(|error| error.to_string())?;
     let errors = errors.join().unwrap_or_default();
     if status.success() {
@@ -554,7 +573,6 @@ fn last_line(output: &str) -> String {
 /// Runs this app's own `runberth ARGS...` with no terminal, passing each
 /// line of its output and errors to `line`; the whole output on failure.
 fn run_self_streaming(args: &[String], mut line: impl FnMut(&str)) -> Result<(), String> {
-    use std::io::BufRead;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     // One stream, in order: errors are steps' last words.
     let mut child = Command::new("/bin/sh")
@@ -568,14 +586,11 @@ fn run_self_streaming(args: &[String], mut line: impl FnMut(&str)) -> Result<(),
         .map_err(|error| format!("Cannot run the install: {error}"))?;
     let mut output = String::new();
     let stdout = child.stdout.take().expect("piped stdout");
-    for text in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-        let text = text.trim();
-        if !text.is_empty() {
-            line(text);
-            output.push_str(text);
-            output.push('\n');
-        }
-    }
+    each_line(stdout, |text| {
+        line(text);
+        output.push_str(text);
+        output.push('\n');
+    });
     let status = child.wait().map_err(|error| error.to_string())?;
     if status.success() { Ok(()) } else { Err(output) }
 }
@@ -1068,6 +1083,24 @@ mod install_tests {
         );
         assert!(install_arguments(r#"{"packages": "rm -rf; x"}"#).is_err());
         assert!(install_arguments("not json").is_err());
+    }
+
+    #[test]
+    fn progress_redrawn_with_carriage_returns_comes_as_separate_lines() {
+        let output = "Removing gcc ...\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 100%\rdone\n\nlast";
+        let mut lines = Vec::new();
+        each_line(output.as_bytes(), |line| lines.push(line.to_owned()));
+        assert_eq!(
+            lines,
+            [
+                "Removing gcc ...",
+                "(Reading database ...",
+                "(Reading database ... 5%",
+                "(Reading database ... 100%",
+                "done",
+                "last"
+            ]
+        );
     }
 
     #[test]

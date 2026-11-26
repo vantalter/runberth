@@ -208,10 +208,20 @@ static NSTextField *statusLine(CGFloat width) {
     label.maximumNumberOfLines = 1;
     label.usesSingleLineMode = YES;
     [label.widthAnchor constraintEqualToConstant:width].active = YES;
+    // One line high whatever it is given, so no text can resize the window.
+    [label.heightAnchor constraintEqualToConstant:ceil(label.font.ascender - label.font.descender +
+                                                       label.font.leading) + 2]
+        .active = YES;
     return label;
 }
 
 static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
+    // A status is one line: breaks inside it, such as a progress counter's
+    // carriage returns, become spaces.
+    NSArray<NSString *> *parts =
+        [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    text = [[parts filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]]
+        componentsJoinedByString:@" "];
     // A space keeps the line's height while it is empty.
     label.stringValue = text.length ? text : @" ";
     label.toolTip = text.length ? text : nil;
