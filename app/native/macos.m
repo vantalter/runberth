@@ -178,7 +178,7 @@ static NSImage *symbol(NSString *name, NSString *description) {
 
 /* A tab, with the window's status bar along its bottom: every tab shows
  * the same activity line, so it reads as one bar across the window. */
-static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content, NSTextField *bar) {
+static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content, NSView *bar) {
     NSViewController *controller = [[NSViewController alloc] init];
     controller.title = title;
     NSView *view = [[NSView alloc] init];
@@ -264,7 +264,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSTextField *lastChecked;
 /* The rows that only Sparkle can fill: the check interval and last check. */
 @property NSArray<NSGridRow *> *sparkleRows;
-@property NSTextField *testStatus, *tokenState, *loginNote, *version, *settingsPath;
+@property NSTextField *tokenState, *loginNote, *version, *settingsPath;
 /* Install Runberth…, enabled unless the server is known to have Runberth. */
 @property NSButton *installButton;
 /* Whether the server has Runberth: 1 yes, 0 no, -1 not known. */
@@ -287,20 +287,23 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 @property NSButton *cleanupButton;
 /* The status bar at the bottom of each tab, and whether an install or a
  * cleanup runs, which keeps its button off. */
-@property NSMutableArray<NSTextField *> *activityBars;
+@property NSMutableArray<NSTextField *> *barLabels;
+@property NSMutableArray<NSImageView *> *barIcons;
+@property NSMutableArray<NSProgressIndicator *> *barSpinners;
 @property BOOL installRunning, cleanupRunning;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
 @property NSButton *confirmButton;
 @property NSAlert *confirmAlert;
-@property NSArray<NSTextField *> *errorLabels;
+/* The settings' error, such as an invalid port, shown in the status bar
+ * until an edit fixes it; empty when there is none. */
+@property NSString *settingsError;
+/* The activities Rust sent last, for the status bar. */
+@property NSArray<NSDictionary *> *activities;
 @property NSTimer *saveTimer;
 @end
 
 @implementation Settings
-- (NSTextField *)errorLabel {
-    return statusLine(300);
-}
 - (NSView *)server {
     self.host = textField(@"203.0.113.10 or vps.example.com", 260, self);
     self.user = textField(@"ubuntu", 140, self);
@@ -310,10 +313,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     keyNote.stringValue = @"Leave empty to use your SSH agent and ~/.ssh/config. For localhost on port 22 "
                           @"the app runs Runberth on this computer, without SSH. The server's host key "
                           @"must already be known: connect once with ssh first.";
-    // The settings' errors; results of the buttons go to the status bar.
-    self.testStatus = statusLine(300);
     self.installButton = pushButton(@"Install Runberth…", self, @selector(installRunberth:));
-    self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:self.testStatus];
     NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
         @[ @"User:", self.user ],
@@ -321,9 +321,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
         @[ @"SSH key:", column(@[ row(@[ self.key, pushButton(@"Choose…", self, @selector(chooseKey:)) ]),
                                   keyNote ]) ],
         NSNull.null,
-        @[ @"", column(@[ row(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)),
-                                 self.installButton ]),
-                          self.testStatus ]) ],
+        @[ @"", row(@[ pushButton(@"Test Connection", tray, @selector(testConnection:)), self.installButton ]) ],
     ]);
     NSBox *line = [[NSBox alloc] init];
     line.boxType = NSBoxSeparator;
@@ -426,13 +424,11 @@ static NSString *const StoredTokenMask = @"••••••••••••�
     self.notifications.action = @selector(changed:);
     self.loginBox = [NSButton checkboxWithTitle:@"Launch at Login" target:self action:@selector(toggleLogin:)];
     self.loginNote = statusLine(300);
-    NSTextField *error = [self errorLabel];
-    self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:error];
     // Selectable, so the path can be copied.
     self.settingsPath = noteLabel();
     self.settingsPath.selectable = YES;
     return form(@[
-        @[ @"Refresh every:", column(@[ row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]), error ]) ],
+        @[ @"Refresh every:", row(@[ self.interval, [NSTextField labelWithString:@"seconds"] ]) ],
         @[ @"Notifications:", [self notificationPermission] ],
         @[ @"Startup:", column(@[ self.loginBox, self.loginNote ]) ],
         @[ @"Command line:", [self commandLineTool] ],
@@ -626,19 +622,57 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     else
         setStatus(self.commandLineStatus, @"Adds /usr/local/bin/runberth, linked to this app", YES);
 }
-/* The status bar: the newest running activity, or else the newest result,
- * worded and timed by Rust as the menu shows it. While an install or a
- * cleanup runs, its button stays off. */
-- (void)showActivities:(NSArray<NSDictionary *> *)activities {
-    NSDictionary *shown = nil;
-    for (NSDictionary *activity in activities)
-        if ([activity[@"running"] boolValue] || ![shown[@"running"] boolValue])
-            shown = activity;
-    for (NSTextField *bar in self.activityBars) {
-        setStatus(bar, shown[@"line"] ?: @"", YES);
-        if (shown && ![shown[@"running"] boolValue])
-            bar.textColor = [shown[@"ok"] boolValue] ? appGreen() : appError();
+/* The status bar, the window's one place for messages: work in progress
+ * first, then a settings error, then the newest result, each with its
+ * symbol: a spinner, a warning, a check, or a cross. Lines are worded and
+ * timed by Rust as the menu shows them. */
+- (void)showBar {
+    NSDictionary *running = nil, *latest = nil;
+    for (NSDictionary *activity in self.activities) {
+        if ([activity[@"running"] boolValue])
+            running = activity;
+        latest = activity;
     }
+    NSString *text = @"";
+    NSColor *color = NSColor.secondaryLabelColor;
+    NSString *symbolName = nil;
+    BOOL spinning = NO;
+    if (running) {
+        text = running[@"line"];
+        spinning = YES;
+    } else if (self.settingsError.length) {
+        text = self.settingsError;
+        color = appError();
+        symbolName = @"exclamationmark.triangle.fill";
+    } else if (latest) {
+        BOOL ok = [latest[@"ok"] boolValue];
+        text = latest[@"line"];
+        color = ok ? appGreen() : appError();
+        symbolName = ok ? @"checkmark.circle.fill" : @"xmark.circle.fill";
+    }
+    // The symbol says it: the line drops its leading mark.
+    if ([text hasPrefix:@"✓ "] || [text hasPrefix:@"✗ "])
+        text = [text substringFromIndex:2];
+    NSImage *image = symbolName ? [NSImage imageWithSystemSymbolName:symbolName accessibilityDescription:nil] : nil;
+    for (NSUInteger index = 0; index < self.barLabels.count; index++) {
+        setStatus(self.barLabels[index], text, YES);
+        self.barLabels[index].textColor = color;
+        NSImageView *icon = self.barIcons[index];
+        icon.image = image;
+        icon.contentTintColor = color;
+        icon.hidden = image == nil;
+        NSProgressIndicator *spinner = self.barSpinners[index];
+        spinner.hidden = !spinning;
+        if (spinning)
+            [spinner startAnimation:nil];
+        else
+            [spinner stopAnimation:nil];
+    }
+}
+/* While an install or a cleanup runs, its button stays off. */
+- (void)showActivities:(NSArray<NSDictionary *> *)activities {
+    self.activities = activities;
+    [self showBar];
     BOOL installing = NO, cleaning = NO;
     for (NSDictionary *activity in activities) {
         if (![activity[@"running"] boolValue])
@@ -762,12 +796,45 @@ static NSString *shellQuoted(NSString *path) {
 - (void)openDonate:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:DonateURL]];
 }
-/* One tab's copy of the status bar, which `status:` keeps in step. */
-- (NSTextField *)activityBar {
-    NSTextField *bar = statusLine(508);
-    if (!self.activityBars)
-        self.activityBars = [NSMutableArray array];
-    [self.activityBars addObject:bar];
+/* One tab's copy of the status bar, which `showBar` keeps in step: a
+ * symbol in a slot of its own, so the text never moves, then the line. */
+- (NSView *)activityBar {
+    NSTextField *label = statusLine(484);
+    NSImageView *icon = [[NSImageView alloc] init];
+    icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:NSFont.smallSystemFontSize
+                                                                               weight:NSFontWeightRegular];
+    icon.hidden = YES;
+    NSProgressIndicator *spinner = [[NSProgressIndicator alloc] init];
+    spinner.style = NSProgressIndicatorStyleSpinning;
+    spinner.controlSize = NSControlSizeSmall;
+    spinner.displayedWhenStopped = NO;
+    spinner.hidden = YES;
+    NSView *slot = [[NSView alloc] init];
+    for (NSView *part in @[ icon, spinner ]) {
+        part.translatesAutoresizingMaskIntoConstraints = NO;
+        [slot addSubview:part];
+        [NSLayoutConstraint activateConstraints:@[
+            [part.centerXAnchor constraintEqualToAnchor:slot.centerXAnchor],
+            [part.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor],
+            [part.widthAnchor constraintLessThanOrEqualToConstant:16],
+            [part.heightAnchor constraintLessThanOrEqualToConstant:16],
+        ]];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [slot.widthAnchor constraintEqualToConstant:16],
+        [slot.heightAnchor constraintEqualToConstant:16],
+    ]];
+    NSStackView *bar = row(@[ slot, label ]);
+    bar.spacing = 6;
+    bar.alignment = NSLayoutAttributeCenterY;
+    if (!self.barLabels) {
+        self.barLabels = [NSMutableArray array];
+        self.barIcons = [NSMutableArray array];
+        self.barSpinners = [NSMutableArray array];
+    }
+    [self.barLabels addObject:label];
+    [self.barIcons addObject:icon];
+    [self.barSpinners addObject:spinner];
     return bar;
 }
 - (void)build {
@@ -801,7 +868,6 @@ static NSString *shellQuoted(NSString *path) {
             if ([item.representedObject isEqual:fields[@"notifications"]])
                 [self.notifications selectItem:item];
         self.updatesBox.state = [fields[@"check_updates"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-        setStatus(self.testStatus, @"", YES);
         setStatus(self.tokenState, @"Checking the token…", YES);
         self.version.stringValue = [NSString stringWithFormat:@"%@", state[@"version"]];
         // With the home folder as ~, as people write it.
@@ -959,9 +1025,10 @@ static NSString *shellQuoted(NSString *path) {
     button.attributedTitle = [[NSAttributedString alloc] initWithString:@"Remove Everything" attributes:attributes];
 }
 - (void)status:(NSDictionary *)state {
-    if (state[@"error"])
-        for (NSTextField *label in self.errorLabels)
-            setStatus(label, state[@"error"], NO);
+    if (state[@"error"]) {
+        self.settingsError = state[@"error"];
+        [self showBar];
+    }
     if (state[@"cleanup_plan"])
         [self confirmCleanup:state[@"cleanup_plan"]];
     if (state[@"installed"]) {
