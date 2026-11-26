@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "runberth"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "libc",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "runberth-app"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cc",
  "libc",
