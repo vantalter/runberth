@@ -271,6 +271,14 @@ fn execute(remote: &[&str], needs_token: bool) -> Result<i32, String> {
             path.display()
         )
     })?;
+    // Said plainly, rather than as sudo's "command not found".
+    if server::installed(server) == Some(false) {
+        return Err(format!(
+            "{} at {}; run: runberth install",
+            server::NOT_INSTALLED,
+            server.label()
+        ));
+    }
     let stdin = std::io::stdin();
     let token = if !needs_token {
         None

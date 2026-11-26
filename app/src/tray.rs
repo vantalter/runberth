@@ -4,7 +4,8 @@
 //! the UI loop, the tray icon, its menu, and notifications.
 
 use crate::{
-    cli, config, github, install, login, menu, native, report, runs, server, settings, token, updates,
+    activity, cli, config, github, install, login, menu, native, report, runs, server, settings, token,
+    updates,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_int};
@@ -50,56 +51,12 @@ static ACTIONS: Mutex<Option<HashMap<u32, Action>>> = Mutex::new(None);
 static WAKE: OnceLock<Mutex<Sender<Wake>>> = OnceLock::new();
 static LOGIN: AtomicI32 = AtomicI32::new(-1);
 static SPARKLE: AtomicBool = AtomicBool::new(false);
-/// Connections, disconnections, and syncs in progress, with each one's
-/// latest line from the server.
-static OPERATIONS: Mutex<Vec<menu::Operation>> = Mutex::new(Vec::new());
-
-/// Starts showing an operation on `repo`, unless one already runs there.
-fn begin_operation(repo: &str, verb: &str) -> bool {
-    let Ok(mut operations) = OPERATIONS.lock() else {
-        return false;
-    };
-    if operations.iter().any(|operation| operation.repo == repo) {
-        return false;
-    }
-    operations.push(menu::Operation {
-        repo: repo.to_owned(),
-        verb: verb.to_owned(),
-        step: String::new(),
-    });
-    true
-}
-
-/// Shows the server's latest line for the operation on `repo`.
-fn operation_step(repo: &str, step: &str) {
-    if let Ok(mut operations) = OPERATIONS.lock() {
-        if let Some(operation) = operations.iter_mut().find(|operation| operation.repo == repo) {
-            operation.step = step.to_owned();
-        }
-    }
-    wake(Wake::Redraw);
-}
-
-fn end_operation(repo: &str) {
-    if let Ok(mut operations) = OPERATIONS.lock() {
-        operations.retain(|operation| operation.repo != repo);
-    }
-}
-
-fn current_operations() -> Vec<menu::Operation> {
-    OPERATIONS
-        .lock()
-        .map(|operations| operations.clone())
-        .unwrap_or_default()
-}
 /// Whether the server in the settings has Runberth: 1 yes, 0 no, -1 not
 /// known, as while it does not answer. Settings enables Install with it.
 static INSTALLED: AtomicI32 = AtomicI32::new(-1);
-/// An install handed to Terminal, because sudo asked for a password: the
-/// app says it finished once the server has Runberth.
-static INSTALLING_IN_TERMINAL: AtomicBool = AtomicBool::new(false);
-/// The server cleanup's latest line while it runs.
-static CLEANUP: Mutex<Option<String>> = Mutex::new(None);
+/// An install handed to Terminal, because sudo asked for a password: it
+/// ends once the server has Runberth.
+static INSTALLING_IN_TERMINAL: Mutex<Option<activity::Handle>> = Mutex::new(None);
 /// The server a cleanup removed Runberth from, until it answers again: its
 /// failing status then means "removed", not "unreachable".
 static REMOVED: Mutex<Option<config::Server>> = Mutex::new(None);
@@ -178,6 +135,7 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
     let (kind, value) = (string(kind), string(value));
     match kind.as_str() {
         "ready" => {
+            activity::on_change(activities_changed);
             LOGIN.store(login::state(), Ordering::Relaxed);
             SPARKLE.store(unsafe { native::native_has_updater() } != 0, Ordering::Relaxed);
             if let Ok(config) = config::load(&config::settings_path()) {
@@ -213,50 +171,45 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
+        // Work the native side did itself, such as installing the command
+        // line tool: {"key", "title", "ok", "result"}.
+        "activity-record" => {
+            if let Ok(done) = serde_json::from_str::<serde_json::Value>(&value) {
+                activity::record(
+                    done["key"].as_str().unwrap_or("native"),
+                    done["title"].as_str().unwrap_or_default(),
+                    done["ok"].as_bool().unwrap_or(false),
+                    done["result"].as_str().unwrap_or_default(),
+                );
+            }
+        }
         "install-server" => match install_arguments(&value) {
             Ok(args) => in_background(move || install_in_app(&args)),
             Err(error) => native::settings_status(
                 &json!({"install": error, "install_ok": false, "install_done": true}).to_string(),
             ),
         },
-        "cleanup-preview" => in_background(|| {
-            let status = match run_on_server(&["cleanup"], false) {
-                Ok(plan) => json!({"cleanup_plan": String::from_utf8_lossy(&plan).trim_end()}),
-                Err(error) => json!({"cleanup": error, "cleanup_ok": false}),
+        "cleanup-preview" => {
+            let Some(activity) = activity::begin("cleanup", "Reading the cleanup plan") else {
+                return;
             };
-            native::settings_status(&status.to_string());
-        }),
-        "cleanup-execute" => in_background(|| {
-            set_cleanup(Some(String::new()));
-            // Each line the server prints names its step, or apt's package.
-            let result = stream_on_server(&["cleanup", "--execute", "--github-token-stdin"], true, |line| {
-                native::settings_status(&json!({"cleanup_progress": line}).to_string());
-                set_cleanup(Some(line.to_owned()));
-            });
-            set_cleanup(None);
-            let (message, ok) = match &result {
-                Ok(()) => ("Runberth is removed from the server".to_owned(), true),
-                Err(error) => (error.clone(), false),
-            };
-            if ok {
-                let server = config::load(&config::settings_path())
-                    .ok()
-                    .and_then(|config| config.server().cloned());
-                if let Ok(mut removed) = REMOVED.lock() {
-                    *removed = server;
+            in_background(move || match run_on_server(&["cleanup"], false) {
+                // The plan leads to a question, not a result.
+                Ok(plan) => {
+                    activity.dismiss();
+                    native::settings_status(
+                        &json!({"cleanup_plan": String::from_utf8_lossy(&plan).trim_end()}).to_string(),
+                    );
                 }
-            }
-            native::settings_status(
-                &json!({"cleanup": message, "cleanup_ok": ok, "cleanup_done": true}).to_string(),
-            );
-            let title = if ok {
-                "Server cleaned up"
-            } else {
-                "Cleanup stopped"
+                Err(error) => activity.finish(false, &format!("Couldn't read the cleanup plan: {error}")),
+            });
+        }
+        "cleanup-execute" => {
+            let Some(activity) = activity::begin("cleanup", "Removing Runberth from the server") else {
+                return;
             };
-            native::notify(title, &message, "");
-            wake(Wake::Refresh);
-        }),
+            in_background(move || cleanup_server(activity));
+        }
         "settings-file" => open_settings_file(),
         "login-toggle" => {
             LOGIN.store(login::toggle(), Ordering::Relaxed);
@@ -268,62 +221,84 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
     }
 }
 
+/// Shows the activities' change: the menu redraws, and Settings gets them
+/// for its status bar.
+fn activities_changed() {
+    wake(Wake::Redraw);
+    activities_to_settings();
+}
+
+/// The lines for Settings' status bar, worded and timed here as in the
+/// menu: {"key", "running", "ok", "line"} each, the newest last.
+fn activities_to_settings() {
+    native::settings_status(&json!({"activities": activity_lines()}).to_string());
+}
+
+fn activity_lines() -> Vec<serde_json::Value> {
+    let now = runs::now();
+    activity::current()
+        .iter()
+        .map(|activity| {
+            json!({
+                "key": activity.key,
+                "running": activity.running(),
+                "ok": activity.ok,
+                "line": activity.line(now),
+            })
+        })
+        .collect()
+}
+
 /// Connects or disconnects a repository in the background, as `runberth
-/// connect` and `disconnect` do, then announces the result.
+/// connect` and `disconnect` do, as an activity with the server's steps.
 fn start_operation(command: &'static str, repo: String) {
-    let verb = if command == "connect" {
-        "Connecting"
+    let name = runs::short(&repo).to_owned();
+    let (verb, title) = if command == "connect" {
+        ("Connecting", format!("Connecting {name}"))
     } else {
-        "Disconnecting"
+        ("Disconnecting", format!("Disconnecting {name}"))
     };
-    if !begin_operation(&repo, verb) {
+    let Some(activity) = activity::begin_for(&format!("repo:{repo}"), &title, Some(&repo), verb) else {
         return;
-    }
-    // It takes a minute or more: say it started, and where to follow it.
-    let (title, body) = start_notice(command, &repo);
-    native::notify(&title, &body, &format!("https://github.com/{repo}"));
-    wake(Wake::Refresh);
+    };
+    // You started it, and it takes a minute or more: say so.
+    let body = if command == "connect" {
+        "This takes a minute or so; the menu shows each step"
+    } else {
+        "Removing its runner from the server and GitHub; the menu shows each step"
+    };
+    native::notify(&title, body, &format!("https://github.com/{repo}"));
     in_background(move || {
-        let result = run_operation(command, &repo);
-        let name = runs::short(&repo);
-        let (title, body) = match (&result, command) {
+        let result = run_operation(command, &repo, &activity);
+        let (ok, result_line, body) = match (&result, command) {
             (Ok(()), "connect") => (
+                true,
                 format!("Connected {name}"),
                 "Its runner waits for jobs on the server".to_owned(),
             ),
             (Ok(()), _) => (
+                true,
                 format!("Disconnected {name}"),
                 "Its runner is removed from the server and GitHub".to_owned(),
             ),
-            (Err((error, _)), "connect") => (format!("Cannot connect {name}"), error.clone()),
-            (Err((error, _)), _) => (format!("Cannot disconnect {name}"), error.clone()),
+            (Err((error, _)), "connect") => (false, format!("Couldn't connect {name}"), error.clone()),
+            (Err((error, _)), _) => (false, format!("Couldn't disconnect {name}"), error.clone()),
         };
         // A missing opt-in file opens GitHub's page to create it.
         let page = match &result {
             Err((_, Some(page))) => page.clone(),
             _ => format!("https://github.com/{repo}/settings/actions/runners"),
         };
-        native::notify(&title, &body, &page);
-        end_operation(&repo);
+        native::notify(&result_line, &body, &page);
+        let shown = if ok {
+            result_line
+        } else {
+            format!("{result_line}: {body}")
+        };
+        activity.finish(ok, &shown);
         LIST_AGAIN.store(true, Ordering::Relaxed);
         wake(Wake::Refresh);
     });
-}
-
-/// The notification that a connection or disconnection started.
-fn start_notice(command: &str, repo: &str) -> (String, String) {
-    let name = runs::short(repo);
-    if command == "connect" {
-        (
-            format!("Connecting {name}"),
-            "This takes a minute or so; the menu shows each step".to_owned(),
-        )
-    } else {
-        (
-            format!("Disconnecting {name}"),
-            "Removing its runner from the server and GitHub; the menu shows each step".to_owned(),
-        )
-    }
 }
 
 /// Whether a repository's manifest changed since the server applied it, and
@@ -335,28 +310,33 @@ fn needs_sync(applied: &str, current: &str, tried: Option<&String>) -> bool {
 /// Applies a repository's changed manifest on the server, then says what
 /// changed: the server's "Installed for…", "Removed…", and "Kept…" lines.
 fn start_sync(repo: String) {
-    if !begin_operation(&repo, "Syncing") {
+    let name = runs::short(&repo).to_owned();
+    let Some(activity) = activity::begin_for(
+        &format!("repo:{repo}"),
+        &format!("Syncing {name}"),
+        Some(&repo),
+        "Syncing",
+    ) else {
         return;
-    }
-    wake(Wake::Redraw);
+    };
     in_background(move || {
-        let name = runs::short(&repo);
         let mut output = String::new();
         let result = stream_on_server(&["sync", &repo], true, |line| {
-            operation_step(&repo, line);
+            activity.step(line);
             output.push_str(line);
             output.push('\n');
         });
-        let (title, body) = match result {
-            Ok(()) => (format!("Synced {name}"), sync_summary(&output)),
-            Err(error) => (format!("Cannot sync {name}"), error),
+        let (ok, title, body) = match result {
+            Ok(()) => (true, format!("Synced {name}"), sync_summary(&output)),
+            Err(error) => (false, format!("Couldn't sync {name}"), error),
         };
         native::notify(
             &title,
             &body,
             &format!("https://github.com/{repo}/blob/HEAD/.github/runberth.json"),
         );
-        end_operation(&repo);
+        let first = body.lines().next().unwrap_or_default();
+        activity.finish(ok, &format!("{title}: {first}"));
         wake(Wake::Refresh);
     });
 }
@@ -380,7 +360,11 @@ fn sync_summary(output: &str) -> String {
 }
 
 /// Runs the operation; on failure, the reason and the page that helps.
-fn run_operation(command: &str, repo: &str) -> Result<(), (String, Option<String>)> {
+fn run_operation(
+    command: &str,
+    repo: &str,
+    activity: &activity::Handle,
+) -> Result<(), (String, Option<String>)> {
     if command == "connect" {
         let config = config::load(&config::settings_path()).map_err(|error| (error, None))?;
         let token = token::read(&config).map_err(|error| (error, None))?;
@@ -389,18 +373,7 @@ fn run_operation(command: &str, repo: &str) -> Result<(), (String, Option<String
             .map_err(|missing| (missing.message, Some(missing.page)))?;
     }
     // Each line the server prints is the operation's latest step.
-    stream_on_server(&[command, repo], true, |line| operation_step(repo, line)).map_err(|error| (error, None))
-}
-
-fn cleanup_step() -> Option<String> {
-    CLEANUP.lock().ok().and_then(|step| step.clone())
-}
-
-fn set_cleanup(step: Option<String>) {
-    if let Ok(mut current) = CLEANUP.lock() {
-        *current = step;
-    }
-    wake(Wake::Redraw);
+    stream_on_server(&[command, repo], true, |line| activity.step(line)).map_err(|error| (error, None))
 }
 
 /// Passes each non-empty line of `output` to `line`, as it arrives. A
@@ -615,47 +588,63 @@ fn show_settings() {
         "path": path.display().to_string(),
         "error": error,
         "installed": INSTALLED.load(Ordering::Relaxed),
+        "activities": activity_lines(),
     });
     native::show_settings(&window.to_string());
 }
 
-/// Runs `runberth install` without a terminal, showing each line it prints
-/// in Settings as it arrives, as the cleanup does. When sudo on the server
-/// asks for a password, which needs a terminal, it hands the install to
-/// Terminal instead.
-fn install_in_app(args: &[String]) {
-    let result = run_self_streaming(args, |line| {
-        native::settings_status(&json!({"install_progress": line}).to_string());
+/// Removes Runberth from the server, as an activity with its steps: each line
+/// the server prints names one, or apt's package.
+fn cleanup_server(activity: activity::Handle) {
+    let result = stream_on_server(&["cleanup", "--execute", "--github-token-stdin"], true, |line| {
+        activity.step(line);
     });
+    if result.is_ok() {
+        let server = config::load(&config::settings_path())
+            .ok()
+            .and_then(|config| config.server().cloned());
+        if let Ok(mut removed) = REMOVED.lock() {
+            *removed = server;
+        }
+    }
+    let (ok, title, body) = match result {
+        Ok(()) => (true, "Removed Runberth from the server".to_owned(), String::new()),
+        Err(error) => (false, "Couldn't remove Runberth".to_owned(), error),
+    };
+    native::notify(&title, &body, "");
+    activity.finish(ok, &if ok { title } else { format!("{title}: {body}") });
+    wake(Wake::Refresh);
+}
+
+/// Runs `runberth install` without a terminal, as an activity with its
+/// steps. When sudo on the server asks for a password, which needs a
+/// terminal, it hands the install to Terminal, and the activity ends once
+/// the server has Runberth.
+fn install_in_app(args: &[String]) {
+    let Some(activity) = activity::begin("install", "Installing Runberth on the server") else {
+        return;
+    };
+    let result = run_self_streaming(args, |line| activity.step(line));
     match result {
         Err(output) if needs_password(&output) => {
-            INSTALLING_IN_TERMINAL.store(true, Ordering::Relaxed);
-            native::settings_status(
-                &json!({"install_progress": "sudo asks for the server's password: continue in Terminal"})
-                    .to_string(),
-            );
+            activity.step("sudo asks for the server's password: continue in Terminal");
+            if let Ok(mut pending) = INSTALLING_IN_TERMINAL.lock() {
+                *pending = Some(activity);
+            }
             run_in_terminal(args);
         }
-        result => finish_install(result.map_err(|output| last_line(&output))),
+        result => finish_install(activity, result.map_err(|output| last_line(&output))),
     }
     wake(Wake::Refresh);
 }
 
-fn finish_install(result: Result<(), String>) {
-    let (message, ok) = match result {
-        Ok(()) => ("Runberth is installed on the server".to_owned(), true),
-        Err(error) => (error, false),
+fn finish_install(activity: activity::Handle, result: Result<(), String>) {
+    let (ok, title, body) = match result {
+        Ok(()) => (true, "Installed Runberth on the server".to_owned(), String::new()),
+        Err(error) => (false, "Couldn't install Runberth".to_owned(), error),
     };
-    native::settings_status(&json!({"install": message, "install_ok": ok, "install_done": true}).to_string());
-    native::notify(
-        if ok {
-            "Runberth installed"
-        } else {
-            "Install stopped"
-        },
-        &message,
-        "",
-    );
+    native::notify(&title, &body, "");
+    activity.finish(ok, &if ok { title } else { format!("{title}: {body}") });
 }
 
 /// Whether sudo on the server refused because it needs a password, which
@@ -787,8 +776,10 @@ fn token_check() -> serde_json::Value {
 
 /// Asks the server for its status with the saved settings.
 fn test_connection() {
-    native::settings_status(&json!({"test": "Connecting…", "test_ok": true}).to_string());
-    in_background(|| {
+    let Some(activity) = activity::begin("test", "Testing the connection") else {
+        return;
+    };
+    in_background(move || {
         let (message, ok) = match config::load(&config::settings_path()) {
             Err(error) => (error, false),
             Ok(config) => match config.server() {
@@ -806,7 +797,14 @@ fn test_connection() {
                 },
             },
         };
-        native::settings_status(&json!({"test": message, "test_ok": ok}).to_string());
+        activity.finish(
+            ok,
+            &if ok {
+                message
+            } else {
+                format!("Couldn't connect: {message}")
+            },
+        );
     });
 }
 
@@ -922,8 +920,14 @@ impl Poller {
         if INSTALLED.swap(installed, Ordering::Relaxed) != installed {
             native::settings_status(&json!({"installed": installed}).to_string());
         }
-        if installed == 1 && INSTALLING_IN_TERMINAL.swap(false, Ordering::Relaxed) {
-            finish_install(Ok(()));
+        if installed == 1 {
+            if let Some(activity) = INSTALLING_IN_TERMINAL
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.take())
+            {
+                finish_install(activity, Ok(()));
+            }
         }
         let removed = REMOVED.lock().is_ok_and(|mut removed| {
             // Answering again, as after a new install, or another server.
@@ -1033,8 +1037,7 @@ impl Poller {
             login: LOGIN.load(Ordering::Relaxed),
             sparkle,
             update: self.update.clone(),
-            operations: current_operations(),
-            cleanup: cleanup_step(),
+            activities: activity::current(),
             removed,
             candidates: github
                 .is_some()
@@ -1077,7 +1080,22 @@ fn poll(receiver: Receiver<Wake>) {
         let refreshed = Instant::now();
         loop {
             let left = interval.saturating_sub(refreshed.elapsed());
-            match receiver.recv_timeout(left) {
+            // While work runs, the menu's clock ticks each second.
+            let ticking = activity::any_running();
+            let wait = if ticking {
+                left.min(Duration::from_secs(1))
+            } else {
+                left
+            };
+            match receiver.recv_timeout(wait) {
+                Err(RecvTimeoutError::Timeout) if ticking && !left.is_zero() && wait < left => {
+                    publish(&View {
+                        activities: activity::current(),
+                        now: runs::now(),
+                        ..view.clone()
+                    });
+                    activities_to_settings();
+                }
                 Ok(Wake::Refresh) | Err(RecvTimeoutError::Timeout) => break,
                 Ok(Wake::MenuOpened) if refreshed.elapsed() >= RECENT => break,
                 Ok(Wake::MenuOpened) => continue,
@@ -1091,8 +1109,7 @@ fn poll(receiver: Receiver<Wake>) {
                     break;
                 }
                 Ok(Wake::Redraw) => publish(&View {
-                    cleanup: cleanup_step(),
-                    operations: current_operations(),
+                    activities: activity::current(),
                     now: runs::now(),
                     ..view.clone()
                 }),
@@ -1246,21 +1263,6 @@ mod install_tests {
                 "done",
                 "last"
             ]
-        );
-    }
-
-    #[test]
-    fn connecting_and_disconnecting_say_they_started() {
-        assert_eq!(
-            start_notice("connect", "vantalter/aerofoil"),
-            (
-                "Connecting aerofoil".to_owned(),
-                "This takes a minute or so; the menu shows each step".to_owned()
-            )
-        );
-        assert_eq!(
-            start_notice("disconnect", "vantalter/aerofoil").0,
-            "Disconnecting aerofoil"
         );
     }
 

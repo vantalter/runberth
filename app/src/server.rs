@@ -160,6 +160,9 @@ pub fn options(server: &Server, socket_dir: Option<&Path>) -> Vec<String> {
         "ConnectTimeout=10",
         "ServerAliveInterval=10",
         "ServerAliveCountMax=2",
+        // Errors only: no "Shared connection to HOST closed." after each
+        // command run with a terminal.
+        "LogLevel=ERROR",
     ]
     .iter()
     .flat_map(|option| ["-o".to_owned(), (*option).to_owned()])

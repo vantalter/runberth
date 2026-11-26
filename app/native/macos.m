@@ -176,17 +176,28 @@ static NSImage *symbol(NSString *name, NSString *description) {
 }
 
 
-static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content) {
+/* A tab, with the window's status bar along its bottom: every tab shows
+ * the same activity line, so it reads as one bar across the window. */
+static NSTabViewItem *pane(NSString *title, NSImage *image, NSView *content, NSTextField *bar) {
     NSViewController *controller = [[NSViewController alloc] init];
     controller.title = title;
     NSView *view = [[NSView alloc] init];
-    content.translatesAutoresizingMaskIntoConstraints = NO;
-    [view addSubview:content];
+    NSBox *rule = [[NSBox alloc] init];
+    rule.boxType = NSBoxSeparator;
+    for (NSView *part in @[ content, rule, bar ]) {
+        part.translatesAutoresizingMaskIntoConstraints = NO;
+        [view addSubview:part];
+    }
     [NSLayoutConstraint activateConstraints:@[
         [content.topAnchor constraintEqualToAnchor:view.topAnchor constant:20],
-        [content.bottomAnchor constraintEqualToAnchor:view.bottomAnchor constant:-20],
         [content.leadingAnchor constraintGreaterThanOrEqualToAnchor:view.leadingAnchor constant:30],
         [content.centerXAnchor constraintEqualToAnchor:view.centerXAnchor],
+        [rule.topAnchor constraintEqualToAnchor:content.bottomAnchor constant:20],
+        [rule.leadingAnchor constraintEqualToAnchor:view.leadingAnchor],
+        [rule.trailingAnchor constraintEqualToAnchor:view.trailingAnchor],
+        [bar.topAnchor constraintEqualToAnchor:rule.bottomAnchor constant:6],
+        [bar.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:16],
+        [bar.bottomAnchor constraintEqualToAnchor:view.bottomAnchor constant:-7],
         [view.widthAnchor constraintEqualToConstant:540],
     ]];
     controller.view = view;
@@ -230,81 +241,6 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
 
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
  * after typing stops; Rust validates them and reports problems back. */
-/* "2:05" for a running time. */
-static NSString *minutesAndSeconds(NSTimeInterval seconds) {
-    long whole = (long)seconds;
-    return [NSString stringWithFormat:@"%ld:%02ld", whole / 60, whole % 60];
-}
-
-/* Work on the server that takes minutes, such as an install or a cleanup,
- * on one status line: the latest step and a running clock while it runs,
- * so it never looks stuck, then how it ended, in colour, with the time it
- * took. The line keeps the result: a dialog could be dismissed while
- * another app is in front, and a notification says it too. */
-@interface Progress : NSObject
-@property NSTextField *label;
-@property NSDate *started;
-@property NSString *step;
-@property NSTimer *timer;
-@end
-
-@implementation Progress
-- (instancetype)initWithLabel:(NSTextField *)label {
-    if ((self = [super init]))
-        self.label = label;
-    return self;
-}
-- (BOOL)running {
-    return self.started != nil;
-}
-- (void)start:(NSString *)step {
-    self.started = [NSDate date];
-    self.step = step;
-    [self.timer invalidate];
-    __weak Progress *weak = self;
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:1
-                                                 repeats:YES
-                                                   block:^(NSTimer *timer) {
-                                                     (void)timer;
-                                                     [weak show];
-                                                   }];
-    [self show];
-}
-- (void)step:(NSString *)step {
-    if (!self.running)
-        return;
-    self.step = step;
-    [self show];
-}
-- (void)show {
-    if (!self.running)
-        return;
-    NSString *elapsed = minutesAndSeconds(-self.started.timeIntervalSinceNow);
-    // apt's lines end in "...": one ellipsis is enough.
-    NSString *step =
-        [self.step stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@". …"]];
-    // The clock first, so a long line cannot push it out of sight.
-    setStatus(self.label, [NSString stringWithFormat:@"%@ · %@…", elapsed, step], YES);
-}
-/* Empties the line, unless the work still runs: a result stops being true
- * once other work changes the server. */
-- (void)clear {
-    if (!self.running)
-        setStatus(self.label, @"", YES);
-}
-- (void)finish:(NSString *)message ok:(BOOL)ok {
-    NSTimeInterval took = self.running ? -self.started.timeIntervalSinceNow : 0;
-    [self.timer invalidate];
-    self.timer = nil;
-    self.started = nil;
-    NSString *line =
-        [NSString stringWithFormat:@"%@ %@ · took %@", ok ? @"✓" : @"✗", message, minutesAndSeconds(took)];
-    setStatus(self.label, line, ok);
-    if (ok)
-        self.label.textColor = NSColor.systemGreenColor;
-}
-@end
-
 @interface Settings : NSObject <NSWindowDelegate, NSTextFieldDelegate>
 @property NSWindow *window;
 @property NSTextField *host, *user, *port, *key, *tokenCommand, *interval;
@@ -328,20 +264,18 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
 /* A typed token is on its way to the keychain: once it is stored, the field
  * shows dots again; if storing fails, it keeps what was typed. */
 @property BOOL savingToken;
-@property NSTextField *cleanupStatus;
 /* Whether macOS lets the app show notifications. */
 @property NSTextField *notificationsStatus;
 /* Whether `runberth` in /usr/local/bin is this app's command. */
 @property NSTextField *commandLineStatus;
 /* Installs the command, or removes the app's link once it is installed. */
 @property NSButton *commandLineButton;
-/* What the button just did, shown until Settings closes: 1 installed,
- * 2 removed, 0 nothing. */
-@property int commandLineDone;
+
 @property NSButton *cleanupButton;
-/* The cleanup's progress and result on its status line, and the install's
- * on the line under Test Connection. */
-@property Progress *cleanupProgress, *installProgress;
+/* The status bar at the bottom of each tab, and whether an install or a
+ * cleanup runs, which keeps its button off. */
+@property NSMutableArray<NSTextField *> *activityBars;
+@property BOOL installRunning, cleanupRunning;
 /* In the cleanup dialog: the host typed to confirm, and the button it enables. */
 @property NSTextField *confirmField;
 @property NSButton *confirmButton;
@@ -363,11 +297,9 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
     keyNote.stringValue = @"Leave empty to use your SSH agent and ~/.ssh/config. For localhost on port 22 "
                           @"the app runs Runberth on this computer, without SSH. The server's host key "
                           @"must already be known: connect once with ssh first.";
-    // One line for the test's result and the settings' errors, which also
-    // replace a result that the edit made stale.
+    // The settings' errors; results of the buttons go to the status bar.
     self.testStatus = statusLine(300);
     self.installButton = pushButton(@"Install Runberth…", self, @selector(installRunberth:));
-    self.installProgress = [[Progress alloc] initWithLabel:self.testStatus];
     self.errorLabels = [(self.errorLabels ?: @[]) arrayByAddingObject:self.testStatus];
     NSGridView *grid = form(@[
         @[ @"Host:", self.host ],
@@ -418,9 +350,6 @@ static NSColor *closeButtonRed(void) {
         bullet.textColor = NSColor.secondaryLabelColor;
         [lines addObject:bullet];
     }
-    self.cleanupStatus = statusLine(300);
-    self.cleanupProgress = [[Progress alloc] initWithLabel:self.cleanupStatus];
-    [lines addObject:self.cleanupStatus];
     NSStackView *text = column(lines);
     text.spacing = 4;
     // The bullets line up with the warning's text, past its icon.
@@ -679,18 +608,6 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
 - (void)refreshCommandLineTool {
     BOOL installed = [self commandLineToolInstalled];
     self.commandLineButton.title = installed ? @"Remove Command Line Tool…" : @"Install Command Line Tool…";
-    // What the button just did stays in green, as long as it still holds.
-    if (self.commandLineDone == 1 && installed) {
-        setStatus(self.commandLineStatus, @"✓ Installed: run runberth in Terminal", YES);
-        self.commandLineStatus.textColor = NSColor.systemGreenColor;
-        return;
-    }
-    if (self.commandLineDone == 2 && !installed) {
-        setStatus(self.commandLineStatus, @"✓ Removed /usr/local/bin/runberth", YES);
-        self.commandLineStatus.textColor = NSColor.systemGreenColor;
-        return;
-    }
-    self.commandLineDone = 0;
     if (installed)
     {
         NSString *source = [self commandLineSource];
@@ -699,6 +616,45 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     }
     else
         setStatus(self.commandLineStatus, @"Adds /usr/local/bin/runberth, linked to this app", YES);
+}
+/* The status bar: the newest running activity, or else the newest result,
+ * worded and timed by Rust as the menu shows it. While an install or a
+ * cleanup runs, its button stays off. */
+- (void)showActivities:(NSArray<NSDictionary *> *)activities {
+    NSDictionary *shown = nil;
+    for (NSDictionary *activity in activities)
+        if ([activity[@"running"] boolValue] || ![shown[@"running"] boolValue])
+            shown = activity;
+    for (NSTextField *bar in self.activityBars) {
+        setStatus(bar, shown[@"line"] ?: @"", YES);
+        if (shown && ![shown[@"running"] boolValue])
+            bar.textColor = [shown[@"ok"] boolValue] ? NSColor.systemGreenColor : NSColor.systemRedColor;
+    }
+    BOOL installing = NO, cleaning = NO;
+    for (NSDictionary *activity in activities) {
+        if (![activity[@"running"] boolValue])
+            continue;
+        installing |= [activity[@"key"] isEqualToString:@"install"];
+        cleaning |= [activity[@"key"] isEqualToString:@"cleanup"];
+    }
+    // Back on when it ends, unless the server does not need it.
+    if (self.installRunning && !installing)
+        self.installButton.enabled = self.serverInstalled != 1;
+    if (self.cleanupRunning && !cleaning)
+        self.cleanupButton.enabled = self.serverInstalled != 0;
+    self.installRunning = installing;
+    self.cleanupRunning = cleaning;
+    if (installing)
+        self.installButton.enabled = NO;
+    if (cleaning)
+        self.cleanupButton.enabled = NO;
+}
+/* What the command line button did, for the status bar and the menu, as
+ * every other activity. */
+static void recordCommandLine(NSString *title, BOOL ok, NSString *result) {
+    NSDictionary *done = @{@"key" : @"command-line", @"title" : title, @"ok" : @(ok), @"result" : result};
+    NSData *json = [NSJSONSerialization dataWithJSONObject:done options:0 error:NULL];
+    emit(@"activity-record", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
 }
 /* Runs a shell command as an administrator, after macOS asks for the password;
  * NO if it failed or was cancelled, with the failure shown. */
@@ -710,7 +666,9 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     [[[NSAppleScript alloc] initWithSource:source] executeAndReturnError:&failure];
     // Cancelling the password prompt is not an error worth showing.
     if (failure && [failure[NSAppleScriptErrorNumber] integerValue] != -128)
-        setStatus(self.commandLineStatus, failure[NSAppleScriptErrorMessage] ?: @"The command failed", NO);
+        recordCommandLine(@"Changing the runberth command", NO,
+                          [@"Couldn't change the runberth command: "
+                              stringByAppendingString:failure[NSAppleScriptErrorMessage] ?: @"the command failed"]);
     return failure == nil;
 }
 /* A path in single quotes for the shell. */
@@ -732,7 +690,9 @@ static NSString *shellQuoted(NSString *path) {
         NSError *error = nil;
         [files removeItemAtPath:CommandLinePath error:NULL];
         if (![files createSymbolicLinkAtPath:CommandLinePath withDestinationPath:executable error:&error]) {
-            setStatus(self.commandLineStatus, error.localizedDescription, NO);
+            recordCommandLine(@"Installing the runberth command", NO,
+                              [@"Couldn't install the runberth command: "
+                                  stringByAppendingString:error.localizedDescription]);
             return;
         }
     } else if (![self runAsAdministrator:[NSString stringWithFormat:@"mkdir -p /usr/local/bin && ln -sf %@ %@",
@@ -740,7 +700,8 @@ static NSString *shellQuoted(NSString *path) {
                                                                      shellQuoted(CommandLinePath)]]) {
         return;
     }
-    self.commandLineDone = 1;
+    recordCommandLine(@"Installing the runberth command", YES,
+                      @"Installed the runberth command: run runberth in Terminal");
     [self refreshCommandLineTool];
 }
 /* Removes the runberth command at /usr/local/bin, whatever installed it. */
@@ -760,13 +721,15 @@ static NSString *shellQuoted(NSString *path) {
                     NSError *error = nil;
                     if ([NSFileManager.defaultManager isWritableFileAtPath:@"/usr/local/bin"]) {
                         if (![NSFileManager.defaultManager removeItemAtPath:CommandLinePath error:&error]) {
-                            setStatus(self.commandLineStatus, error.localizedDescription, NO);
+                            recordCommandLine(@"Removing the runberth command", NO,
+                                              [@"Couldn't remove the runberth command: "
+                                                  stringByAppendingString:error.localizedDescription]);
                             return;
                         }
                     } else if (![self runAsAdministrator:[@"rm -f " stringByAppendingString:shellQuoted(CommandLinePath)]]) {
                         return;
                     }
-                    self.commandLineDone = 2;
+                    recordCommandLine(@"Removing the runberth command", YES, @"Removed the runberth command");
                     [self refreshCommandLineTool];
                   }];
 }
@@ -790,14 +753,23 @@ static NSString *shellQuoted(NSString *path) {
 - (void)openDonate:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:DonateURL]];
 }
+/* One tab's copy of the status bar, which `status:` keeps in step. */
+- (NSTextField *)activityBar {
+    NSTextField *bar = statusLine(508);
+    if (!self.activityBars)
+        self.activityBars = [NSMutableArray array];
+    [self.activityBars addObject:bar];
+    return bar;
+}
 - (void)build {
     NSTabViewController *tabs = [[NSTabViewController alloc] init];
     tabs.tabStyle = NSTabViewControllerTabStyleToolbar;
-    [tabs addTabViewItem:pane(@"Server", symbol(@"server.rack", @"Server"), [self server])];
-    [tabs addTabViewItem:pane(@"GitHub", symbol(@"key", @"GitHub"), [self github])];
-    [tabs addTabViewItem:pane(@"General", symbol(@"gearshape", @"General"), [self general])];
-    [tabs addTabViewItem:pane(@"Updates", symbol(@"arrow.triangle.2.circlepath", @"Updates"), [self updates])];
-    [tabs addTabViewItem:pane(@"Support", symbol(@"heart", @"Support"), [self support])];
+    [tabs addTabViewItem:pane(@"Server", symbol(@"server.rack", @"Server"), [self server], [self activityBar])];
+    [tabs addTabViewItem:pane(@"GitHub", symbol(@"key", @"GitHub"), [self github], [self activityBar])];
+    [tabs addTabViewItem:pane(@"General", symbol(@"gearshape", @"General"), [self general], [self activityBar])];
+    [tabs addTabViewItem:pane(@"Updates", symbol(@"arrow.triangle.2.circlepath", @"Updates"), [self updates],
+                              [self activityBar])];
+    [tabs addTabViewItem:pane(@"Support", symbol(@"heart", @"Support"), [self support], [self activityBar])];
     self.window = [NSWindow windowWithContentViewController:tabs];
     self.window.styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable;
     self.window.releasedWhenClosed = NO;
@@ -809,7 +781,6 @@ static NSString *shellQuoted(NSString *path) {
         [self build];
     // An open window keeps what is being typed; a closed one shows the file.
     if (!self.window.visible) {
-        self.commandLineDone = 0;
         NSDictionary *fields = state[@"fields"];
         self.host.stringValue = fields[@"host"] ?: @"";
         self.user.stringValue = fields[@"user"] ?: @"";
@@ -842,7 +813,6 @@ static NSString *shellQuoted(NSString *path) {
     // Clean up the server the window shows, not an edit still being typed.
     [self save];
     self.cleanupButton.enabled = NO;
-    setStatus(self.cleanupStatus, @"Reading the cleanup plan…", YES);
     emit(@"cleanup-preview", @"");
 }
 /* Shows the server's dry-run plan and removes everything only on a second,
@@ -901,13 +871,9 @@ static NSString *shellQuoted(NSString *path) {
                     self.confirmAlert = nil;
                     if (response == NSModalResponseOK) {
                         self.cleanupButton.enabled = NO;
-                        // Only the latest change to the server shows its result.
-                        [self.installProgress clear];
-                        [self.cleanupProgress start:@"Removing Runberth from the server"];
                         emit(@"cleanup-execute", @"");
                     } else {
                         self.cleanupButton.enabled = YES;
-                        setStatus(self.cleanupStatus, @"", YES);
                     }
                   }];
 }
@@ -964,9 +930,6 @@ static NSString *shellQuoted(NSString *path) {
                     };
                     NSData *json = [NSJSONSerialization dataWithJSONObject:choice options:0 error:NULL];
                     self.installButton.enabled = NO;
-                    // Only the latest change to the server shows its result.
-                    [self.cleanupProgress clear];
-                    [self.installProgress start:@"Installing Runberth on the server"];
                     emit(@"install-server", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
                   }];
 }
@@ -990,8 +953,6 @@ static NSString *shellQuoted(NSString *path) {
     if (state[@"error"])
         for (NSTextField *label in self.errorLabels)
             setStatus(label, state[@"error"], NO);
-    if (state[@"test"])
-        setStatus(self.testStatus, state[@"test"], [state[@"test_ok"] boolValue]);
     if (state[@"cleanup_plan"])
         [self confirmCleanup:state[@"cleanup_plan"]];
     if (state[@"installed"]) {
@@ -1002,28 +963,13 @@ static NSString *shellQuoted(NSString *path) {
         self.installButton.enabled = installed != 1;
         self.installButton.toolTip =
             installed == 1 ? @"Runberth is installed: Update Server… in the menu updates it" : nil;
-        if (self.installProgress.running)
+        if (self.installRunning)
             self.installButton.enabled = NO;
-        if (!self.cleanupProgress.running)
-            self.cleanupButton.enabled = installed != 0;
+        self.cleanupButton.enabled = installed != 0 && !self.cleanupRunning;
         self.cleanupButton.toolTip = installed == 0 ? @"Runberth is not installed on this server" : nil;
     }
-    if (state[@"install_progress"])
-        [self.installProgress step:state[@"install_progress"]];
-    if (state[@"install_done"]) {
-        [self.installProgress finish:state[@"install"] ok:[state[@"install_ok"] boolValue]];
-        // After a failure, Install is available again unless the server
-        // is known to have Runberth.
-        self.installButton.enabled = ![state[@"install_ok"] boolValue] && self.serverInstalled != 1;
-    }
-    if (state[@"cleanup_progress"])
-        [self.cleanupProgress step:state[@"cleanup_progress"]];
-    if (state[@"cleanup"]) {
-        setStatus(self.cleanupStatus, state[@"cleanup"], [state[@"cleanup_ok"] boolValue]);
-        self.cleanupButton.enabled = YES;
-        if (state[@"cleanup_done"])
-            [self.cleanupProgress finish:state[@"cleanup"] ok:[state[@"cleanup_ok"] boolValue]];
-    }
+    if (state[@"activities"])
+        [self showActivities:state[@"activities"]];
     if (state[@"token_stored"]) {
         if (self.savingToken && [state[@"token_stored"] boolValue] && [state[@"token_ok"] boolValue])
             self.token.stringValue = @"";

@@ -16,6 +16,8 @@ mod settings;
 mod token;
 
 #[cfg(feature = "tray")]
+mod activity;
+#[cfg(feature = "tray")]
 mod login;
 #[cfg(feature = "tray")]
 mod menu;

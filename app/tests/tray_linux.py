@@ -136,6 +136,8 @@ ssh = home / "ssh"
 ssh.write_text(f"""#!/bin/sh
 case "$*" in
   *"status --json") cat '{status_file}' ;;
+  # The check that Runberth is installed, before each command.
+  *" test -x /opt/runberth/bin/runberth") exit 0 ;;
   *" connect o/new") read token; echo "$token|$*" > '{connected}' ;;
   *" logs o/r --lines 300") echo "runner journal for o/r" ;;
   *) echo "runberth: unexpected $*" >&2; exit 1 ;;
