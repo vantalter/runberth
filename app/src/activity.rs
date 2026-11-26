@@ -69,7 +69,11 @@ impl Activity {
 
     fn outcome(&self, finished: i64) -> String {
         let mark = if self.ok { "✓" } else { "✗" };
-        format!("{mark} {} · took {}", self.result, clock(finished - self.started))
+        // Work done at once has no time worth saying.
+        match finished - self.started {
+            0 => format!("{mark} {}", self.result),
+            took => format!("{mark} {} · took {}", self.result, clock(took)),
+        }
     }
 }
 
@@ -280,6 +284,19 @@ mod tests {
         let current = activities.current(11);
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].key, "install");
+    }
+
+    #[test]
+    fn work_done_at_once_says_no_time() {
+        let mut activities = Activities::default();
+        let id = activities
+            .begin("command-line", "Installing the runberth command", None, "", 50)
+            .unwrap();
+        activities.finish(id, true, "Installed the runberth command", 50);
+        assert_eq!(
+            activities.current(50)[0].line(50),
+            "✓ Installed the runberth command"
+        );
     }
 
     #[test]

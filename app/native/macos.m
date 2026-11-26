@@ -824,9 +824,22 @@ static NSString *shellQuoted(NSString *path) {
         [slot.widthAnchor constraintEqualToConstant:16],
         [slot.heightAnchor constraintEqualToConstant:16],
     ]];
-    NSStackView *bar = row(@[ slot, label ]);
-    bar.spacing = 6;
-    bar.alignment = NSLayoutAttributeCenterY;
+    // The symbol centred on the text's capitals, not on the label's box,
+    // which is taller than its line.
+    NSView *bar = [[NSView alloc] init];
+    for (NSView *part in @[ slot, label ]) {
+        part.translatesAutoresizingMaskIntoConstraints = NO;
+        [bar addSubview:part];
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [slot.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor],
+        [label.leadingAnchor constraintEqualToAnchor:slot.trailingAnchor constant:6],
+        [label.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor],
+        [label.topAnchor constraintEqualToAnchor:bar.topAnchor],
+        [label.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor],
+        [slot.centerYAnchor constraintEqualToAnchor:label.firstBaselineAnchor
+                                           constant:-round(label.font.capHeight / 2)],
+    ]];
     if (!self.barLabels) {
         self.barLabels = [NSMutableArray array];
         self.barIcons = [NSMutableArray array];
