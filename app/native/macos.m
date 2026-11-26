@@ -276,6 +276,12 @@ static NSString *minutesAndSeconds(NSTimeInterval seconds) {
     // The clock first, so a long line cannot push it out of sight.
     setStatus(self.label, [NSString stringWithFormat:@"%@ · %@…", elapsed, step], YES);
 }
+/* Empties the line, unless the work still runs: a result stops being true
+ * once other work changes the server. */
+- (void)clear {
+    if (!self.running)
+        setStatus(self.label, @"", YES);
+}
 - (void)finish:(NSString *)message ok:(BOOL)ok {
     NSTimeInterval took = self.running ? -self.started.timeIntervalSinceNow : 0;
     [self.timer invalidate];
@@ -854,6 +860,8 @@ static NSString *shellQuoted(NSString *path) {
                     self.confirmAlert = nil;
                     if (response == NSModalResponseOK) {
                         self.cleanupButton.enabled = NO;
+                        // Only the latest change to the server shows its result.
+                        [self.installProgress clear];
                         [self.cleanupProgress start:@"Removing Runberth from the server"];
                         emit(@"cleanup-execute", @"");
                     } else {
@@ -919,6 +927,8 @@ static NSString *shellQuoted(NSString *path) {
                     };
                     NSData *json = [NSJSONSerialization dataWithJSONObject:choice options:0 error:NULL];
                     self.installButton.enabled = NO;
+                    // Only the latest change to the server shows its result.
+                    [self.cleanupProgress clear];
                     [self.installProgress start:@"Installing Runberth on the server"];
                     emit(@"install-server", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
                   }];
