@@ -441,6 +441,15 @@ pub fn disconnect(repo: &str, api: Option<&dyn Api>, github_removed: bool) -> Re
         .join(format!("{}.json", entry.runner_id));
     system::remove_file_if_present(&record)?;
     crate::dock::resume_dock(dock_was_running)?;
+    // Its packages go once no other repository or the host needs them. The
+    // runner is already gone, so a failure here only leaves packages behind
+    // for cleanup.
+    let registry = crate::registry::Registry::host();
+    match crate::packages::request(&registry, repo, &[]) {
+        Ok(report) => report.print(repo),
+        Err(error) => eprintln!("Left {repo}'s packages installed: {error}"),
+    }
+    registry.set_manifest(repo, None)?;
     println!("Disconnected {repo}. Remove .github/runberth.json there if it should not reconnect.");
     Ok(())
 }

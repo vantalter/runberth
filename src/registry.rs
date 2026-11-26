@@ -1,6 +1,7 @@
 //! Records of the server resources Runberth created, so cleanup removes
 //! exactly those and nothing else.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, DirBuilder};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -64,6 +65,9 @@ pub struct Registry {
     pub root: PathBuf,
 }
 
+/// Requested packages and who needs them.
+pub type Requests = BTreeMap<String, BTreeSet<String>>;
+
 /// Read a JSON record, or None if absent. Refuses symlinks.
 pub fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     match fs::symlink_metadata(path) {
@@ -124,6 +128,53 @@ impl Registry {
 
     pub fn packages_path(&self) -> PathBuf {
         self.root.join("packages.json")
+    }
+
+    /// Who needs each requested package: "host" for the base packages and
+    /// `runberth add-packages`, or a connected repository for its
+    /// `.github/runberth.json`.
+    pub fn requests_path(&self) -> PathBuf {
+        self.root.join("requests.json")
+    }
+
+    /// Each connected repository's `.github/runberth.json`, by GitHub's blob
+    /// SHA, so the app can tell when it changed.
+    pub fn manifests_path(&self) -> PathBuf {
+        self.root.join("manifests.json")
+    }
+
+    pub fn requests(&self) -> Result<Requests> {
+        Ok(read_record(&self.requests_path())?.unwrap_or_default())
+    }
+
+    pub fn set_requests(&self, requests: &Requests) -> Result<()> {
+        self.secure_root()?;
+        write_record(&self.requests_path(), requests)
+    }
+
+    pub fn manifests(&self) -> Result<BTreeMap<String, String>> {
+        Ok(read_record(&self.manifests_path())?.unwrap_or_default())
+    }
+
+    /// Records a repository's manifest SHA, or forgets it with None.
+    pub fn set_manifest(&self, repo: &str, sha: Option<&str>) -> Result<()> {
+        self.secure_root()?;
+        let mut manifests = self.manifests()?;
+        match sha {
+            Some(sha) => manifests.insert(repo.to_owned(), sha.to_owned()),
+            None => manifests.remove(repo),
+        };
+        write_record(&self.manifests_path(), &manifests)
+    }
+
+    /// Forgets packages that were purged, so cleanup does not look for them.
+    pub fn forget_packages(&self, purged: &BTreeSet<String>) -> Result<()> {
+        let path = self.packages_path();
+        let Some(mut all) = read_record::<Vec<String>>(&path)? else {
+            return Ok(());
+        };
+        all.retain(|package| !purged.contains(package.split(':').next().unwrap_or(package)));
+        write_record(&path, &all)
     }
 
     /// Record a runner account before creating it. An identical record is
@@ -239,6 +290,36 @@ mod tests {
         let packages: Vec<String> = read_record(&registry.packages_path()).unwrap().unwrap();
         assert_eq!(packages, ["curl", "git", "zlib1g"]);
         assert!(registry.add_packages(&["-rf".into()]).is_err());
+    }
+
+    #[test]
+    fn requests_manifests_and_forgotten_packages() {
+        let (_temp, registry) = registry();
+        assert!(registry.requests().unwrap().is_empty());
+        let mut requests = Requests::new();
+        requests
+            .entry("gcc".into())
+            .or_default()
+            .insert("vantalter/app".into());
+        registry.set_requests(&requests).unwrap();
+        assert_eq!(registry.requests().unwrap(), requests);
+
+        registry.set_manifest("vantalter/app", Some("abc")).unwrap();
+        registry.set_manifest("vantalter/site", Some("def")).unwrap();
+        registry.set_manifest("vantalter/site", None).unwrap();
+        assert_eq!(
+            registry.manifests().unwrap(),
+            BTreeMap::from([("vantalter/app".to_owned(), "abc".to_owned())])
+        );
+
+        registry
+            .add_packages(&["gcc".into(), "cpp:amd64".into(), "git".into()])
+            .unwrap();
+        registry
+            .forget_packages(&BTreeSet::from(["gcc".to_owned(), "cpp".to_owned()]))
+            .unwrap();
+        let packages: Vec<String> = read_record(&registry.packages_path()).unwrap().unwrap();
+        assert_eq!(packages, ["git"]);
     }
 
     #[test]

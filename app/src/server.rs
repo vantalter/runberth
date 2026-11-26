@@ -36,6 +36,10 @@ pub struct Runner {
     pub service: String,
     #[serde(default)]
     pub waiting: bool,
+    /// GitHub's blob SHA of the repository's .github/runberth.json when it
+    /// was connected or last synced; None from older servers.
+    #[serde(default)]
+    pub manifest_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -55,6 +59,10 @@ pub struct Status {
     /// "x64" or "arm64", as GitHub labels the server's runners.
     #[serde(default)]
     pub arch: Option<String>,
+    /// The packages Runberth installed on request, and who needs each:
+    /// "host", or a repository. None from older servers.
+    #[serde(default)]
+    pub packages: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 /// The values each repository's `.github/runberth.json` must repeat.

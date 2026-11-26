@@ -13,7 +13,16 @@ use crate::names::valid_repo;
 
 const MAX_ENCODED_BYTES: usize = 8192;
 
-pub fn verify(repo: &str, host: &HostConfig, api: &dyn Api) -> Result<()> {
+/// A repository's accepted opt-in.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OptIn {
+    /// The apt packages its workflows need.
+    pub packages: Vec<String>,
+    /// GitHub's blob SHA of the manifest, which changes with its content.
+    pub sha: String,
+}
+
+pub fn verify(repo: &str, host: &HostConfig, api: &dyn Api) -> Result<OptIn> {
     if !valid_repo(repo) || repo.split('/').next() != Some(host.owner.as_str()) {
         bail!("Repository must belong to the configured personal account");
     }
@@ -61,7 +70,10 @@ pub fn verify(repo: &str, host: &HostConfig, api: &dyn Api) -> Result<()> {
     let Ok(decoded) = STANDARD.decode(encoded) else {
         bail!("Invalid repository manifest encoding");
     };
-    host.check_manifest(&decoded)
+    Ok(OptIn {
+        packages: host.check_manifest(&decoded)?,
+        sha: manifest["sha"].as_str().unwrap_or_default().to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -89,8 +101,9 @@ mod tests {
     }
 
     fn manifest(runberth: &str) -> Value {
-        let content = json!({"version": 1, "runberth": runberth, "runner_label": "runberth-ci"});
-        json!({"type": "file", "path": MANIFEST_PATH, "encoding": "base64",
+        let content = json!({"version": 1, "runberth": runberth, "runner_label": "runberth-ci",
+                             "packages": ["gcc"]});
+        json!({"type": "file", "path": MANIFEST_PATH, "encoding": "base64", "sha": "3f2a",
                "content": STANDARD.encode(content.to_string())})
     }
 
@@ -102,7 +115,13 @@ mod tests {
             200,
             manifest("vantalter/runberth"),
         );
-        verify(REPO, &host(), &api).unwrap();
+        assert_eq!(
+            verify(REPO, &host(), &api).unwrap(),
+            OptIn {
+                packages: vec!["gcc".into()],
+                sha: "3f2a".into()
+            }
+        );
         assert_eq!(api.calls.borrow().len(), 2);
     }
 

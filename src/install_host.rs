@@ -93,6 +93,18 @@ pub fn install_host(config_path: &Path) -> Result<()> {
     std::os::unix::fs::chown(lock, Some(0), Some(group)).context(lock.display())?;
     fs::set_permissions(lock, fs::Permissions::from_mode(0o660)).context(lock.display())?;
 
+    // What every runner needs, whatever the repositories ask for: kept
+    // until cleanup. Already installed, as on an update, they cost nothing.
+    let base: Vec<String> = crate::packages::BASE
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut host_packages = crate::packages::requested_by(&registry, crate::packages::HOST)?;
+    host_packages.extend(base);
+    host_packages.sort();
+    host_packages.dedup();
+    crate::packages::request(&registry, crate::packages::HOST, &host_packages)?.print("this host");
+
     println!(
         "Runberth installed for {}. Connect each opted-in repository separately.",
         host.runberth

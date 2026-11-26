@@ -72,6 +72,9 @@ const RECENT: Duration = Duration::from_secs(10);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 /// How long the list of repositories to connect is kept.
 const CANDIDATES_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How often each connected repository's .github/runberth.json is compared
+/// with the one the server applied.
+const MANIFEST_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 fn wake(signal: Wake) {
     if let Some(sender) = WAKE.get() {
@@ -270,6 +273,64 @@ fn start_operation(command: &'static str, repo: String) {
         LIST_AGAIN.store(true, Ordering::Relaxed);
         wake(Wake::Refresh);
     });
+}
+
+/// Whether a repository's manifest changed since the server applied it, and
+/// no sync was tried for this version yet.
+fn needs_sync(applied: &str, current: &str, tried: Option<&String>) -> bool {
+    applied != current && tried.is_none_or(|tried| tried != current)
+}
+
+/// Applies a repository's changed manifest on the server, then says what
+/// changed: the server's "Installed for…", "Removed…", and "Kept…" lines.
+fn start_sync(repo: String) {
+    {
+        let Ok(mut operations) = OPERATIONS.lock() else {
+            return;
+        };
+        if operations.iter().any(|(name, _)| *name == repo) {
+            return;
+        }
+        operations.push((repo.clone(), "Syncing".to_owned()));
+    }
+    wake(Wake::Redraw);
+    in_background(move || {
+        let name = runs::short(&repo);
+        let (title, body) = match run_on_server(&["sync", &repo], true) {
+            Ok(output) => (
+                format!("Synced {name}"),
+                sync_summary(&String::from_utf8_lossy(&output)),
+            ),
+            Err(error) => (format!("Cannot sync {name}"), error),
+        };
+        native::notify(
+            &title,
+            &body,
+            &format!("https://github.com/{repo}/blob/HEAD/.github/runberth.json"),
+        );
+        if let Ok(mut operations) = OPERATIONS.lock() {
+            operations.retain(|(name, _)| *name != repo);
+        }
+        wake(Wake::Refresh);
+    });
+}
+
+/// The lines of `runberth sync` that say what changed.
+fn sync_summary(output: &str) -> String {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            ["Installed for ", "Removed, ", "Kept ", "Packages for "]
+                .iter()
+                .any(|start| line.starts_with(start))
+        })
+        .collect();
+    if lines.is_empty() {
+        "Its packages are up to date".to_owned()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Runs the operation; on failure, the reason and the page that helps.
@@ -740,6 +801,11 @@ struct Poller {
     /// Whether the rejected token was already announced, so it is announced
     /// once until a token works again.
     rejection_announced: bool,
+    /// When the repositories' manifests were last compared with the server's.
+    manifests_checked: Option<Instant>,
+    /// The manifest SHA a sync was started for, per repository, so a sync
+    /// that fails is not repeated until the file changes again.
+    synced: HashMap<String, String>,
 }
 
 /// How to replace a token GitHub rejects, where this platform keeps it.
@@ -753,6 +819,32 @@ fn rejected_line() -> String {
 }
 
 impl Poller {
+    /// Syncs each connected repository whose .github/runberth.json changed
+    /// since the server applied it, as when packages were added to it.
+    fn sync_changed_manifests(&mut self, github: &github::GitHub, status: Option<&server::Status>) {
+        if self
+            .manifests_checked
+            .is_some_and(|checked| checked.elapsed() < MANIFEST_INTERVAL)
+        {
+            return;
+        }
+        self.manifests_checked = Some(Instant::now());
+        let runners = status.and_then(|status| status.runners.as_ref());
+        for runner in runners.into_iter().flatten() {
+            // Older servers do not record it.
+            let Some(applied) = &runner.manifest_sha else {
+                continue;
+            };
+            let Ok(Some(current)) = github.manifest_sha(&runner.repo) else {
+                continue;
+            };
+            if needs_sync(applied, &current, self.synced.get(&runner.repo)) {
+                self.synced.insert(runner.repo.clone(), current);
+                start_sync(runner.repo.clone());
+            }
+        }
+    }
+
     /// Keeps the server's latest answer, and forgets it when the settings
     /// name another server; returns the answer to list repositories from.
     fn remember(
@@ -795,12 +887,16 @@ impl Poller {
             }
             removed.is_some()
         });
-        let last_status = self.remember(server.as_ref(), result.as_ref());
+        // Owned, as the refresh goes on to change the poller.
+        let last_status = self.remember(server.as_ref(), result.as_ref()).cloned();
         if let Ok(mut summary) = SERVER_SUMMARY.lock() {
-            *summary = last_status.map(report::server_summary);
+            *summary = last_status.as_ref().map(report::server_summary);
         }
-        let runners = last_status.and_then(|status| status.runners.clone());
-        if last_status.is_some_and(|status| status.runners.is_none()) {
+        let runners = last_status.as_ref().and_then(|status| status.runners.clone());
+        if last_status
+            .as_ref()
+            .is_some_and(|status| status.runners.is_none())
+        {
             errors.push("The server account cannot list repositories; reinstall with --sudoers".into());
         }
         let runners = runners.unwrap_or_default();
@@ -853,6 +949,9 @@ impl Poller {
         }
         let names: Vec<String> = repos.iter().map(|repo| repo.repo.clone()).collect();
         self.tracker.retain(&names);
+        if let Some(github) = &github {
+            self.sync_changed_manifests(github, last_status.as_ref());
+        }
         let rejected = repos
             .iter()
             .any(|repo| repo.runs.as_ref().is_err_and(|error| error == github::REJECTED));
@@ -913,6 +1012,8 @@ fn poll(receiver: Receiver<Wake>) {
         check_updates: false,
         candidates: None,
         rejection_announced: false,
+        manifests_checked: None,
+        synced: HashMap::new(),
     };
     loop {
         let view = poller.refresh();
@@ -1030,6 +1131,8 @@ mod tests {
             check_updates: false,
             candidates: None,
             rejection_announced: false,
+            manifests_checked: None,
+            synced: HashMap::new(),
         }
     }
 
@@ -1101,6 +1204,30 @@ mod install_tests {
                 "last"
             ]
         );
+    }
+
+    #[test]
+    fn a_changed_manifest_is_synced_once_per_version() {
+        assert!(!needs_sync("a", "a", None));
+        assert!(needs_sync("a", "b", None));
+        // Tried for b, and it failed: not again until the file changes.
+        assert!(!needs_sync("a", "b", Some(&"b".to_owned())));
+        assert!(needs_sync("a", "c", Some(&"b".to_owned())));
+    }
+
+    #[test]
+    fn a_sync_summary_says_what_changed() {
+        let output = "Verified private opt-in: o/app -> o/runberth\nRecorded 9 newly installed packages.\n\
+                      Installed for o/app: gcc libc6-dev\nRemoved, no longer needed: jq\n";
+        assert_eq!(
+            sync_summary(output),
+            "Installed for o/app: gcc libc6-dev\nRemoved, no longer needed: jq"
+        );
+        assert_eq!(
+            sync_summary("Packages for o/app are up to date\n"),
+            "Packages for o/app are up to date"
+        );
+        assert_eq!(sync_summary(""), "Its packages are up to date");
     }
 
     #[test]

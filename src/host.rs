@@ -8,10 +8,12 @@ use serde::Deserialize;
 
 use crate::bail;
 use crate::error::{Context, Result};
-use crate::names::{valid_label, valid_repo};
+use crate::names::{valid_label, valid_package, valid_repo};
 
 pub const MANIFEST_PATH: &str = ".github/runberth.json";
 const MAX_MANIFEST_BYTES: usize = 4096;
+/// More would be a build image, not a list of build tools.
+const MAX_PACKAGES: usize = 64;
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +30,9 @@ struct Manifest {
     version: u32,
     runberth: String,
     runner_label: String,
+    /// apt packages the repository's workflows need on the server.
+    #[serde(default)]
+    packages: Vec<String>,
 }
 
 impl HostConfig {
@@ -48,8 +53,9 @@ impl HostConfig {
         HostConfig::parse(&fs::read_to_string(path).context(path.display())?)
     }
 
-    /// Accept a repository's committed manifest only if it names this host.
-    pub fn check_manifest(&self, content: &[u8]) -> Result<()> {
+    /// Accept a repository's committed manifest only if it names this host,
+    /// and return the apt packages it asks for, sorted and without repeats.
+    pub fn check_manifest(&self, content: &[u8]) -> Result<Vec<String>> {
         if content.len() > MAX_MANIFEST_BYTES {
             bail!("Repository manifest is too large");
         }
@@ -61,7 +67,16 @@ impl HostConfig {
         {
             bail!("Repository manifest does not match this Runberth host");
         }
-        Ok(())
+        if let Some(bad) = manifest.packages.iter().find(|name| !valid_package(name)) {
+            bail!("Repository manifest names an invalid apt package: {bad:?}");
+        }
+        if manifest.packages.len() > MAX_PACKAGES {
+            bail!("Repository manifest asks for more than {MAX_PACKAGES} packages");
+        }
+        let mut packages = manifest.packages;
+        packages.sort();
+        packages.dedup();
+        Ok(packages)
     }
 }
 
@@ -113,6 +128,26 @@ mod tests {
                 .0
                 .contains("repository Runberth manifest")
         );
+        assert_eq!(
+            host.check_manifest(
+                br#"{"version": 1, "runberth": "vantalter/runberth", "runner_label": "runberth-ci",
+                     "packages": ["libc6-dev", "gcc", "gcc"]}"#,
+            )
+            .unwrap(),
+            ["gcc", "libc6-dev"]
+        );
+        for bad in [
+            r#"["-y"]"#,
+            r#"["gcc; rm"]"#,
+            r#"["https://x"]"#,
+            r#"[""]"#,
+            r#""gcc""#,
+        ] {
+            let manifest = format!(
+                r#"{{"version": 1, "runberth": "vantalter/runberth", "runner_label": "runberth-ci", "packages": {bad}}}"#
+            );
+            assert!(host.check_manifest(manifest.as_bytes()).is_err(), "{bad}");
+        }
         assert!(
             host.check_manifest(&vec![b' '; 5000])
                 .unwrap_err()

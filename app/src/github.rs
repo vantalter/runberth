@@ -166,6 +166,24 @@ impl GitHub {
         })
     }
 
+    /// GitHub's blob SHA of the repository's .github/runberth.json on its
+    /// default branch, which changes with its content; None without one.
+    pub fn manifest_sha(&self, repo: &str) -> Result<Option<String>, String> {
+        let path = format!("/repos/{repo}/contents/{MANIFEST}");
+        match self.request(&path).call() {
+            Ok(response) => {
+                let file: serde_json::Value = response
+                    .into_json()
+                    .map_err(|_| "Unexpected answer from GitHub".to_owned())?;
+                Ok(file["sha"].as_str().map(str::to_owned))
+            }
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            Err(ureq::Error::Status(401, _)) => Err(REJECTED.to_owned()),
+            Err(ureq::Error::Status(code, _)) => Err(format!("GitHub answered {code}")),
+            Err(ureq::Error::Transport(_)) => Err("Cannot reach GitHub".to_owned()),
+        }
+    }
+
     pub fn jobs(&self, repo: &str, run: u64) -> Result<Vec<Job>, String> {
         let jobs: Jobs = self
             .get(&format!("/repos/{repo}/actions/runs/{run}/jobs?per_page=30"))?

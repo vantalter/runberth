@@ -517,6 +517,7 @@ mod tests {
             runners: None,
             host: None,
             arch: None,
+            packages: None,
         }
     }
 
@@ -530,6 +531,7 @@ mod tests {
                     repo: "o/r".into(),
                     service: "inactive".into(),
                     waiting: true,
+                    manifest_sha: None,
                 }),
                 runs: Ok(runs),
                 jobs: HashMap::new(),

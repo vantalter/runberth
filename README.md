@@ -42,10 +42,10 @@ Then install over SSH with the VPS's address and your private key. The script do
 
 ```sh
 export RUNBERTH_HOST=203.0.113.10 RUNBERTH_KEY=~/.ssh/vps_ed25519 RUNBERTH_USER=ubuntu
-scripts/install-vps.sh --config ~/runberth-host.json --swap 3 --sudoers --packages "gcc libc6-dev git shellcheck"
+scripts/install-vps.sh --config ~/runberth-host.json --swap 3 --sudoers
 ```
 
-The script uploads the binary with your host config and runs `preflight` and `install-host` on the server. `--swap` adds a Runberth-owned swap file. `--packages` installs build dependencies through Runberth's package tracking, so cleanup can remove them; the list above is a C toolchain, git, and shellcheck; install what your workflows need. `--sudoers` installs the passwordless sudo rule for `connect` and `cleanup`; it is not needed when connecting as root. `--version v0.1.0` pins a release; `--binary PATH` installs a binary you [built yourself](#development) instead, checking a `PATH.sha256` beside it. The server's SSH host key must already be in your `known_hosts`, or pass `--accept-new-host-key` to trust it on first connection. The `RUNBERTH_*` variables stand in for `--host`, `--key`, and `--user` here and in `scripts/vps.sh`. Re-run the script to update Runberth to the latest release. Run `scripts/install-vps.sh --help` for every option.
+The script uploads the binary with your host config and runs `preflight` and `install-host` on the server. `--swap` adds a Runberth-owned swap file. `install-host` installs what every runner needs; each repository lists its own build dependencies in its `.github/runberth.json` (see step 2), and `--packages` adds any the host itself needs, recorded so cleanup removes them. `--sudoers` installs the passwordless sudo rule for `connect`, `sync`, and `cleanup`; it is not needed when connecting as root. `--version v0.1.0` pins a release; `--binary PATH` installs a binary you [built yourself](#development) instead, checking a `PATH.sha256` beside it. The server's SSH host key must already be in your `known_hosts`, or pass `--accept-new-host-key` to trust it on first connection. The `RUNBERTH_*` variables stand in for `--host`, `--key`, and `--user` here and in `scripts/vps.sh`. Re-run the script to update Runberth to the latest release. Run `scripts/install-vps.sh --help` for every option.
 
 To install by hand instead, download the binary and its `.sha256` from the [releases](https://github.com/vantalter/runberth/releases), copy them and your host config to the VPS as `host.json`, check the binary with `sha256sum -c`, then run `./runberth preflight` and `sudo ./runberth install-host --config host.json`.
 
@@ -62,6 +62,8 @@ Commit this file as `.github/runberth.json` on the project's default branch. Its
   "runner_label": "runberth-ci"
 }
 ```
+
+List the apt packages the project's workflows need on the server, such as a C toolchain, as `"packages": ["gcc", "libc6-dev"]`. Connecting installs them; Runberth itself installs only what every runner needs: `git`, `curl`, `unzip`, and `ca-certificates`. Packages are shared: one that two projects list stays until neither does, and one the server had before Runberth always stays. Only the default branch's file counts, so a pull request cannot make the server install anything. When the file changes there, the desktop app notices within a few minutes and runs `runberth sync OWNER/REPO`, which installs what was added and removes what nothing needs any more; without the app, run it yourself. A server older than 0.3.0 refuses a file with `packages`: update it first.
 
 `runberth init`, run in the project's checkout, writes it with the server's own values, and prints the `runs-on` line for its jobs. A server installed before `runberth init` existed does not report them: pass `--runberth YOUR_ACCOUNT/runberth --label runberth-ci`, or update it first.
 
