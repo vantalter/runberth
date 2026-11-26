@@ -810,12 +810,9 @@ static NSString *shellQuoted(NSString *path) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleCritical;
     alert.messageText = @"Remove Runberth from the server?";
-    // The warning beside Clean Up… lists what goes; this says what matters now.
-    alert.informativeText = @"It cannot be undone. Change the repositories' runs-on first.";
-    // The sheet must fit inside Settings: a larger one hangs past the
-    // window's edges and seems to grow it while it slides in and out.
-    const CGFloat width = 380;
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, width, 80)];
+    alert.informativeText = @"Cleanup removes everything in this plan, including each runner's GitHub "
+                            @"registration. It cannot be undone. Change the repositories' runs-on first.";
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 460, 150)];
     scroll.hasVerticalScroller = YES;
     scroll.borderType = NSBezelBorder;
     NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
@@ -828,11 +825,11 @@ static NSString *shellQuoted(NSString *path) {
     NSString *host = [self.host.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     NSTextField *ask = [NSTextField wrappingLabelWithString:
         [NSString stringWithFormat:@"To confirm, type %@ below:", host]];
-    ask.preferredMaxLayoutWidth = width;
+    ask.preferredMaxLayoutWidth = 460;
     self.confirmField = [NSTextField textFieldWithString:@""];
     self.confirmField.placeholderString = host;
     self.confirmField.delegate = self;
-    [self.confirmField.widthAnchor constraintEqualToConstant:width].active = YES;
+    [self.confirmField.widthAnchor constraintEqualToConstant:460].active = YES;
     // Remove Everything is an ordinary button in the dialog's content: an
     // alert draws its own buttons in fixed colours, and this one turns red
     // once the host is typed.
@@ -845,9 +842,9 @@ static NSString *shellQuoted(NSString *path) {
     accessory.spacing = 8;
     [accessory setCustomSpacing:16 afterView:self.confirmField];
     [self.confirmButton.centerXAnchor constraintEqualToAnchor:accessory.centerXAnchor].active = YES;
-    [scroll.widthAnchor constraintEqualToConstant:width].active = YES;
-    [scroll.heightAnchor constraintEqualToConstant:80].active = YES;
-    accessory.frame = NSMakeRect(0, 0, width, accessory.fittingSize.height);
+    [scroll.widthAnchor constraintEqualToConstant:460].active = YES;
+    [scroll.heightAnchor constraintEqualToConstant:150].active = YES;
+    accessory.frame = NSMakeRect(0, 0, 460, accessory.fittingSize.height);
     alert.accessoryView = accessory;
     self.confirmField.toolTip = host;
     // The alert's own button: Escape cancels, and Return confirms nothing.
@@ -883,14 +880,17 @@ static NSString *shellQuoted(NSString *path) {
     [self save];
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Install Runberth on the server";
-    alert.informativeText = @"For your GitHub token's account, with the runner label runberth-ci.";
+    alert.informativeText =
+        @"This installs Runberth for this app's version, the sudoers rule the app needs, and a host config "
+        @"for your GitHub token's account with the runner label runberth-ci. If sudo on the server asks for a "
+        @"password, the install continues in Terminal.";
     self.installSwap = [[NSPopUpButton alloc] init];
     for (NSArray *choice in @[ @[ @"No swap", @0 ], @[ @"2 GB", @2 ], @[ @"3 GB", @3 ], @[ @"4 GB", @4 ] ]) {
         [self.installSwap addItemWithTitle:choice[0]];
         self.installSwap.lastItem.tag = [choice[1] integerValue];
     }
     [self.installSwap selectItemWithTag:3];
-    self.installOnDemand = [NSButton checkboxWithTitle:@"On demand (experimental)"
+    self.installOnDemand = [NSButton checkboxWithTitle:@"Start runners only when a job arrives (experimental)"
                                                 target:nil
                                                 action:nil];
     self.installOnDemand.state = NSControlStateValueOn;
@@ -902,8 +902,7 @@ static NSString *shellQuoted(NSString *path) {
     NSTextField *swapNote = noteLabel();
     swapNote.stringValue = @"Room for builds on a small server.";
     NSTextField *onDemandNote = noteLabel();
-    onDemandNote.stringValue = @"Starts each runner only when a job arrives: saves about 70 MB per repository, "
-                               @"and a job waits a few seconds for its runner.";
+    onDemandNote.stringValue = @"Saves about 70 MB per repository; a job waits a few seconds for its runner.";
     NSTextField *packagesNote = noteLabel();
     packagesNote.stringValue = @"apt packages your builds need, such as gcc for Rust. Add more later with "
                                @"runberth packages add NAME; cleanup removes them.";
