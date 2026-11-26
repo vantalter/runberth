@@ -55,6 +55,9 @@ static OPERATIONS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// Whether the server in the settings has Runberth: 1 yes, 0 no, -1 not
 /// known, as while it does not answer. Settings enables Install with it.
 static INSTALLED: AtomicI32 = AtomicI32::new(-1);
+/// An install handed to Terminal, because sudo asked for a password: the
+/// app says it finished once the server has Runberth.
+static INSTALLING_IN_TERMINAL: AtomicBool = AtomicBool::new(false);
 /// The server cleanup's latest line while it runs.
 static CLEANUP: Mutex<Option<String>> = Mutex::new(None);
 /// The server a cleanup removed Runberth from, until it answers again: its
@@ -168,8 +171,10 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
         "install-server" => match install_arguments(&value) {
-            Ok(args) => run_in_terminal(&args),
-            Err(error) => native::settings_status(&json!({"install_error": error}).to_string()),
+            Ok(args) => in_background(move || install_in_app(&args)),
+            Err(error) => native::settings_status(
+                &json!({"install": error, "install_ok": false, "install_done": true}).to_string(),
+            ),
         },
         "cleanup-preview" => in_background(|| {
             let status = match run_on_server(&["cleanup"], false) {
@@ -489,6 +494,92 @@ fn show_settings() {
     native::show_settings(&window.to_string());
 }
 
+/// Runs `runberth install` without a terminal, showing each line it prints
+/// in Settings as it arrives, as the cleanup does. When sudo on the server
+/// asks for a password, which needs a terminal, it hands the install to
+/// Terminal instead.
+fn install_in_app(args: &[String]) {
+    let result = run_self_streaming(args, |line| {
+        native::settings_status(&json!({"install_progress": line}).to_string());
+    });
+    match result {
+        Err(output) if needs_password(&output) => {
+            INSTALLING_IN_TERMINAL.store(true, Ordering::Relaxed);
+            native::settings_status(
+                &json!({"install_progress": "sudo asks for the server's password: continue in Terminal"})
+                    .to_string(),
+            );
+            run_in_terminal(args);
+        }
+        result => finish_install(result.map_err(|output| last_line(&output))),
+    }
+    wake(Wake::Refresh);
+}
+
+fn finish_install(result: Result<(), String>) {
+    let (message, ok) = match result {
+        Ok(()) => ("Runberth is installed on the server".to_owned(), true),
+        Err(error) => (error, false),
+    };
+    native::settings_status(&json!({"install": message, "install_ok": ok, "install_done": true}).to_string());
+    native::notify(
+        if ok {
+            "Runberth installed"
+        } else {
+            "Install stopped"
+        },
+        &message,
+        "",
+    );
+}
+
+/// Whether sudo on the server refused because it needs a password, which
+/// it can only ask for in a terminal.
+fn needs_password(output: &str) -> bool {
+    output.contains("a terminal is required") || output.contains("a password is required")
+}
+
+/// The last line that says something, for a short failure message.
+fn last_line(output: &str) -> String {
+    output
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map_or_else(
+            || "The install failed".to_owned(),
+            |line| line.trim_start_matches("runberth: ").to_owned(),
+        )
+}
+
+/// Runs this app's own `runberth ARGS...` with no terminal, passing each
+/// line of its output and errors to `line`; the whole output on failure.
+fn run_self_streaming(args: &[String], mut line: impl FnMut(&str)) -> Result<(), String> {
+    use std::io::BufRead;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    // One stream, in order: errors are steps' last words.
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"exec "$0" "$@" 2>&1"#)
+        .arg(&executable)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run the install: {error}"))?;
+    let mut output = String::new();
+    let stdout = child.stdout.take().expect("piped stdout");
+    for text in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        let text = text.trim();
+        if !text.is_empty() {
+            line(text);
+            output.push_str(text);
+            output.push('\n');
+        }
+    }
+    let status = child.wait().map_err(|error| error.to_string())?;
+    if status.success() { Ok(()) } else { Err(output) }
+}
+
 /// The `runberth install` arguments for the Settings sheet's choices:
 /// {"swap": 0|2|3|4, "on_demand": bool, "packages": "gcc git"}, checked as
 /// the command checks its own options.
@@ -678,6 +769,9 @@ impl Poller {
         };
         if INSTALLED.swap(installed, Ordering::Relaxed) != installed {
             native::settings_status(&json!({"installed": installed}).to_string());
+        }
+        if installed == 1 && INSTALLING_IN_TERMINAL.swap(false, Ordering::Relaxed) {
+            finish_install(Ok(()));
         }
         let removed = REMOVED.lock().is_ok_and(|mut removed| {
             // Answering again, as after a new install, or another server.
@@ -974,5 +1068,19 @@ mod install_tests {
         );
         assert!(install_arguments(r#"{"packages": "rm -rf; x"}"#).is_err());
         assert!(install_arguments("not json").is_err());
+    }
+
+    #[test]
+    fn a_password_prompt_moves_the_install_to_terminal() {
+        assert!(needs_password(
+            "sudo: a terminal is required to read the password; either use the -S option"
+        ));
+        assert!(needs_password("sudo: a password is required"));
+        assert!(!needs_password("E: Unable to locate package gcc-99"));
+        assert_eq!(
+            last_line("Downloading Runberth v0.2.3\nrunberth: Preflight failed: 512 MiB of memory\n\n"),
+            "Preflight failed: 512 MiB of memory"
+        );
+        assert_eq!(last_line(""), "The install failed");
     }
 }
