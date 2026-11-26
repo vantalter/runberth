@@ -226,10 +226,14 @@ static NSTextField *statusLine(CGFloat width) {
     return label;
 }
 
-/* The app's two signal colours, for everything red or green in Settings:
- * errors, destructive buttons, and how work ended. */
+/* The app's signal colours: red for destructive buttons and the warning
+ * icon, a darker red that reads as text for errors and failed work, and
+ * green for work that ended well. */
 static NSColor *appRed(void) {
     return [NSColor colorWithSRGBRed:254 / 255.0 green:142 / 255.0 blue:136 / 255.0 alpha:1];
+}
+static NSColor *appError(void) {
+    return [NSColor colorWithSRGBRed:195 / 255.0 green:0 blue:0 alpha:1];
 }
 static NSColor *appGreen(void) {
     return [NSColor colorWithSRGBRed:0 green:136 / 255.0 blue:66 / 255.0 alpha:1];
@@ -245,7 +249,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // A space keeps the line's height while it is empty.
     label.stringValue = text.length ? text : @" ";
     label.toolTip = text.length ? text : nil;
-    label.textColor = ok ? NSColor.secondaryLabelColor : appRed();
+    label.textColor = ok ? NSColor.secondaryLabelColor : appError();
 }
 
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
@@ -633,7 +637,7 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     for (NSTextField *bar in self.activityBars) {
         setStatus(bar, shown[@"line"] ?: @"", YES);
         if (shown && ![shown[@"running"] boolValue])
-            bar.textColor = [shown[@"ok"] boolValue] ? appGreen() : appRed();
+            bar.textColor = [shown[@"ok"] boolValue] ? appGreen() : appError();
     }
     BOOL installing = NO, cleaning = NO;
     for (NSDictionary *activity in activities) {
