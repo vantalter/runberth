@@ -136,7 +136,6 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
     match kind.as_str() {
         "ready" => {
             activity::on_change(activities_changed);
-            activity::on_news(bubble);
             LOGIN.store(login::state(), Ordering::Relaxed);
             SPARKLE.store(unsafe { native::native_has_updater() } != 0, Ordering::Relaxed);
             if let Ok(config) = config::load(&config::settings_path()) {
@@ -227,17 +226,6 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
 fn activities_changed() {
     wake(Wake::Redraw);
     activities_to_settings();
-}
-
-/// An activity's start or end in a bubble under the tray icon, worded as in
-/// the menu: "Connecting aerofoil…", then "✓ Connected aerofoil · took 1:12".
-fn bubble(activity: &activity::Activity) {
-    let now = runs::now();
-    if activity.running() {
-        native::bubble(&format!("{}…", activity.title), None);
-    } else {
-        native::bubble(&activity.line(now), Some(activity.ok));
-    }
 }
 
 /// The lines for Settings' status bar, worded and timed here as in the
