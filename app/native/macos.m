@@ -659,32 +659,44 @@ static NSString *const CommandLinePath = @"/usr/local/bin/runberth";
     self.commandLineStatus = statusLine(300);
     return column(@[ self.commandLineButton, self.commandLineStatus ]);
 }
-/* Whether /usr/local/bin/runberth is this app's link, so removing it is safe. */
+/* Whether there is a runberth command at /usr/local/bin, whatever put it
+ * there: this app, another copy of it, or install.sh. */
 - (BOOL)commandLineToolInstalled {
+    // The link itself, so a link to an app that moved counts too.
+    return [NSFileManager.defaultManager attributesOfItemAtPath:CommandLinePath error:NULL] != nil;
+}
+/* Where the installed command comes from. */
+- (NSString *)commandLineSource {
     NSString *target = [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL];
-    return [target isEqualToString:NSBundle.mainBundle.executablePath];
+    if (!target)
+        return @"a separate copy";
+    if ([target isEqualToString:NSBundle.mainBundle.executablePath])
+        return @"linked to this app";
+    NSString *inApp = @"/Contents/MacOS/runberth";
+    NSString *app = [target hasSuffix:inApp] ? [target substringToIndex:target.length - inApp.length] : target;
+    return [@"linked to " stringByAppendingString:app.stringByAbbreviatingWithTildeInPath];
 }
 - (void)refreshCommandLineTool {
     BOOL installed = [self commandLineToolInstalled];
     self.commandLineButton.title = installed ? @"Remove Command Line Tool…" : @"Install Command Line Tool…";
-    NSDictionary *existing = [NSFileManager.defaultManager attributesOfItemAtPath:CommandLinePath error:NULL];
     // What the button just did stays in green, as long as it still holds.
     if (self.commandLineDone == 1 && installed) {
         setStatus(self.commandLineStatus, @"✓ Installed: run runberth in Terminal", YES);
         self.commandLineStatus.textColor = NSColor.systemGreenColor;
         return;
     }
-    if (self.commandLineDone == 2 && !installed && !existing) {
+    if (self.commandLineDone == 2 && !installed) {
         setStatus(self.commandLineStatus, @"✓ Removed /usr/local/bin/runberth", YES);
         self.commandLineStatus.textColor = NSColor.systemGreenColor;
         return;
     }
     self.commandLineDone = 0;
     if (installed)
-        setStatus(self.commandLineStatus, @"Installed at /usr/local/bin/runberth", YES);
-    else if (existing || [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:CommandLinePath error:NULL])
-        setStatus(self.commandLineStatus,
-                  @"/usr/local/bin/runberth exists; installing replaces it", YES);
+    {
+        NSString *source = [self commandLineSource];
+        NSString *joiner = [source hasPrefix:@"linked"] ? @"Installed, " : @"Installed as ";
+        setStatus(self.commandLineStatus, [joiner stringByAppendingString:source], YES);
+    }
     else
         setStatus(self.commandLineStatus, @"Adds /usr/local/bin/runberth, linked to this app", YES);
 }
@@ -731,12 +743,14 @@ static NSString *shellQuoted(NSString *path) {
     self.commandLineDone = 1;
     [self refreshCommandLineTool];
 }
-/* Removes only the app's own link; a copy installed another way stays. */
+/* Removes the runberth command at /usr/local/bin, whatever installed it. */
 - (void)removeCommandLineTool {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Remove the runberth command?";
-    alert.informativeText = @"This removes /usr/local/bin/runberth. The app keeps working, and you can install "
-                            @"the command again here at any time.";
+    alert.informativeText = [NSString
+        stringWithFormat:@"This removes /usr/local/bin/runberth, %@. The app keeps working, and you can install "
+                         @"the command again here at any time.",
+                         [self commandLineSource]];
     [alert addButtonWithTitle:@"Remove"];
     [alert addButtonWithTitle:@"Cancel"];
     [alert beginSheetModalForWindow:self.window
