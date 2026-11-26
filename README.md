@@ -158,14 +158,22 @@ The binary is `target/x86_64-unknown-linux-musl/release/runberth`. Run `runberth
 
 ### Releasing
 
-Releases are manual. Bump `version` under `[workspace.package]` in `Cargo.toml`, merge that change to `main`, then tag the merge and push the tag:
+Releases are prepared by [release-please](https://github.com/googleapis/release-please). Pull requests are squash-merged under their title, which CI checks is a [Conventional Commit](https://www.conventionalcommits.org): `fix: …` for a bug fix, `feat: …` for a new feature, and `docs:`, `ci:`, `test:`, `refactor:`, `build:`, or `chore:` for changes users do not notice; add `!`, as in `feat!: …`, for a change that breaks existing setups. The title becomes a line in the changelog and in the macOS app's update window, so after the type, say what changed for users. Do not bump the version or edit `CHANGELOG.md` by hand.
+
+After each merge to `main`, release-please keeps a release pull request open, titled like `chore(main): release 0.3.0`, that sets the next version under `[workspace.package]` in `Cargo.toml` and in `Cargo.lock`, and adds the changes to `CHANGELOG.md`. While Runberth is below 1.0, `feat:` and breaking changes raise the minor version (0.2.5 to 0.3.0), and `fix:` and `perf:` the patch version (0.2.5 to 0.2.6). Other types start no release.
+
+To release, merge the release pull request. release-please tags the merge and creates a draft release with the changelog; the release workflow then tests and builds the server binaries for x86_64 and arm64, the `runberth` command and its installer, the macOS app, and the Linux tray app's packages, attaches them with their checksums, puts [.github/release-notes.md](.github/release-notes.md), a guide to which file to download, above the changelog, and publishes the release. Until then it stays a draft, so the app's updates and `install.sh` never find a release without its files. If the build fails, fix the cause and re-run the failed jobs from the Actions tab; the draft waits.
+
+The release pull request is opened with the workflow's own token, so CI does not run on it; it changes only the version and the changelog. Two repository settings are needed: **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**, and, under **Settings → General → Pull Requests**, squash merging with **Default to pull request title**.
+
+release-please makes no pre-releases. To test a build first, tag the release pull request's branch, which already has the new version, with a release candidate tag and push it:
 
 ```sh
-git switch main && git pull
-git tag v0.3.0 && git push origin v0.3.0
+git fetch origin
+git tag v0.3.0-rc.1 origin/release-please--branches--main && git push origin v0.3.0-rc.1
 ```
 
-The tag must match the version in `Cargo.toml`. Pushing it runs the release, which publishes the server binaries for x86_64 and arm64, the `runberth` command and its installer, the macOS app, and the Linux tray app's packages. Merging to `main` alone releases nothing. The release notes start with [.github/release-notes.md](.github/release-notes.md), a guide to which file to download, followed by the merged pull requests. To test a build first, push a release candidate tag for the version in `Cargo.toml`, such as `git tag v0.3.0-rc.1 && git push origin v0.3.0-rc.1`: it is published as a pre-release, which the `latest` downloads, `install.sh`, and the app's updates all skip, and `runberth update --version v0.3.0-rc.1` installs it on a server. See [Releasing the macOS app](docs/desktop-app.md#releasing-the-macos-app) for its signing secrets.
+It is published as a pre-release, which the `latest` downloads, `install.sh`, and the app's updates all skip, and `runberth update --version v0.3.0-rc.1` installs it on a server. Any tag pushed by hand runs the release workflow, if it matches the version in `Cargo.toml`. See [Releasing the macOS app](docs/desktop-app.md#releasing-the-macos-app) for its signing secrets.
 
 The desktop app is the workspace member `app/`; `cargo test -p runberth-app` tests it alone, and `cargo build -p runberth-app --no-default-features` builds the `runberth` command without the tray. See [Build from source](docs/desktop-app.md#build-from-source) for the macOS app bundle.
 
