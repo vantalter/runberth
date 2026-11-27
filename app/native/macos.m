@@ -1067,16 +1067,20 @@ static ActivityWindow *activityWindow(void) {
     ]];
     return stack;
 }
-/* Cleanup, which cannot be undone: a warning and what it removes, beside a
- * red button. The dialog it opens shows the server's full plan. */
+/* Cleanup, which cannot be undone: a tinted red panel with a warning and
+ * what it removes, beside a red button. The dialog it opens shows the
+ * server's full plan. */
 - (NSView *)cleanupSection {
     NSImageView *icon = [NSImageView
         imageViewWithImage:[NSImage imageWithSystemSymbolName:@"exclamationmark.circle.fill"
                                      accessibilityDescription:@"Warning"]];
+    icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:17
+                                                                               weight:NSFontWeightSemibold];
     icon.contentTintColor = appRed();
     NSTextField *warning = [NSTextField labelWithString:@"Warning: This action is destructive."];
+    warning.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
     NSStackView *heading = row(@[ icon, warning ]);
-    heading.spacing = 6;
+    heading.spacing = 10;
     NSMutableArray<NSView *> *lines = [NSMutableArray arrayWithObject:heading];
     for (NSString *removed in @[
              @"Removes every runner and its GitHub registration.",
@@ -1084,16 +1088,14 @@ static ActivityWindow *activityWindow(void) {
              @"Removes the packages and swap Runberth added.",
          ]) {
         NSTextField *bullet = [NSTextField labelWithString:[@"•  " stringByAppendingString:removed]];
-        bullet.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+        bullet.font = [NSFont systemFontOfSize:12];
         bullet.textColor = NSColor.secondaryLabelColor;
         [lines addObject:bullet];
     }
     NSStackView *text = column(lines);
-    text.spacing = 4;
+    text.spacing = 5;
+    [text setCustomSpacing:8 afterView:heading];
     // The bullets line up with the warning's text, past its icon.
-    for (NSView *view in lines)
-        if (view != heading)
-            [text setCustomSpacing:4 afterView:view];
     for (NSView *view in [lines subarrayWithRange:NSMakeRange(1, lines.count - 1)])
         [view.leadingAnchor constraintEqualToAnchor:warning.leadingAnchor].active = YES;
 
@@ -1112,7 +1114,27 @@ static ActivityWindow *activityWindow(void) {
                        forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *section = [NSStackView stackViewWithViews:@[ text, spacer, self.cleanupButton ]];
     section.alignment = NSLayoutAttributeTop;
-    return section;
+    // The button level with the warning's line.
+    [self.cleanupButton.centerYAnchor constraintEqualToAnchor:heading.centerYAnchor].active = YES;
+
+    // A faint wash of the red, edged in it, in light and dark mode alike.
+    NSBox *panel = [[NSBox alloc] init];
+    panel.boxType = NSBoxCustom;
+    panel.titlePosition = NSNoTitle;
+    panel.fillColor = [appRed() colorWithAlphaComponent:0.12];
+    panel.borderColor = [appRed() colorWithAlphaComponent:0.5];
+    panel.borderWidth = 1;
+    panel.cornerRadius = 10;
+    panel.contentViewMargins = NSZeroSize;
+    section.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel.contentView addSubview:section];
+    [NSLayoutConstraint activateConstraints:@[
+        [section.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor constant:14],
+        [section.bottomAnchor constraintEqualToAnchor:panel.contentView.bottomAnchor constant:-14],
+        [section.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor constant:14],
+        [section.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor constant:-14],
+    ]];
+    return panel;
 }
 /* Stands in for a stored token in the token field, which shows it as dots;
  * a GitHub token never contains "•", so typing or pasting replaces it. */
