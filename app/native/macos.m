@@ -985,6 +985,57 @@ static ActivityWindow *activityWindow(void) {
     return shared;
 }
 
+/* Clean Up…, red with white text so it cannot pass for an ordinary
+ * button, in a red panel. While cleanup is unavailable, as on a server
+ * without Runberth, the button is the standard disabled one and the panel,
+ * its icon, and its heading turn grey, so nothing faint stays red. */
+@interface CleanupButton : NSButton
+@property(weak) NSBox *panel;
+@property(weak) NSImageView *icon;
+@property(weak) NSTextField *heading;
+@end
+@implementation CleanupButton
+- (void)setEnabled:(BOOL)enabled {
+    [super setEnabled:enabled];
+    [self restyle];
+}
+/* An inactive window draws no button colour, so white text there would
+ * vanish on the grey: the title is white only while the red shows. */
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    if (!self.window)
+        return;
+    for (NSNotificationName name in @[ NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification ])
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(windowChanged:)
+                                                   name:name
+                                                 object:self.window];
+    [self restyle];
+}
+- (void)windowChanged:(NSNotification *)notification {
+    [self restyle];
+}
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+- (void)restyle {
+    BOOL enabled = self.enabled;
+    BOOL red = enabled && self.window.keyWindow;
+    self.hasDestructiveAction = enabled;
+    self.bezelColor = enabled ? appRed() : nil;
+    NSDictionary *attributes = red ? @{NSForegroundColorAttributeName : NSColor.whiteColor,
+                                       NSFontAttributeName : self.font}
+                                   : @{NSFontAttributeName : self.font};
+    self.attributedTitle = [[NSAttributedString alloc] initWithString:@"Clean Up…" attributes:attributes];
+    NSColor *tint = enabled ? appRed() : NSColor.tertiaryLabelColor;
+    self.panel.fillColor = enabled ? [tint colorWithAlphaComponent:0.12] : NSColor.quaternaryLabelColor;
+    self.panel.borderColor = enabled ? [tint colorWithAlphaComponent:0.5] : NSColor.separatorColor;
+    self.icon.contentTintColor = tint;
+    self.heading.textColor = enabled ? NSColor.labelColor : NSColor.secondaryLabelColor;
+}
+@end
+
 /* Server, GitHub, and General tabs. Edits are saved to settings.json shortly
  * after typing stops; Rust validates them and reports problems back. */
 @interface Settings : NSObject <NSWindowDelegate, NSTextFieldDelegate>
@@ -1095,14 +1146,9 @@ static ActivityWindow *activityWindow(void) {
     for (NSView *view in [lines subarrayWithRange:NSMakeRange(1, lines.count - 1)])
         [view.leadingAnchor constraintEqualToAnchor:warning.leadingAnchor].active = YES;
 
-    // Red with white text, so it cannot pass for an ordinary button.
-    self.cleanupButton = pushButton(@"Clean Up…", self, @selector(cleanup:));
-    self.cleanupButton.hasDestructiveAction = YES;
-    self.cleanupButton.bezelColor = appRed();
-    self.cleanupButton.attributedTitle = [[NSAttributedString alloc]
-        initWithString:self.cleanupButton.title
-            attributes:@{NSForegroundColorAttributeName : NSColor.whiteColor,
-                         NSFontAttributeName : self.cleanupButton.font}];
+    CleanupButton *button = [CleanupButton buttonWithTitle:@"Clean Up…" target:self action:@selector(cleanup:)];
+    button.bezelStyle = NSBezelStyleRounded;
+    self.cleanupButton = button;
     [self.cleanupButton setContentHuggingPriority:NSLayoutPriorityRequired
                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSView *spacer = [[NSView alloc] init];
@@ -1117,8 +1163,6 @@ static ActivityWindow *activityWindow(void) {
     NSBox *panel = [[NSBox alloc] init];
     panel.boxType = NSBoxCustom;
     panel.titlePosition = NSNoTitle;
-    panel.fillColor = [appRed() colorWithAlphaComponent:0.12];
-    panel.borderColor = [appRed() colorWithAlphaComponent:0.5];
     panel.borderWidth = 1;
     panel.cornerRadius = 10;
     panel.contentViewMargins = NSZeroSize;
@@ -1130,6 +1174,11 @@ static ActivityWindow *activityWindow(void) {
         [section.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor constant:14],
         [section.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor constant:-14],
     ]];
+    // Red while cleanup is available, grey while not.
+    button.panel = panel;
+    button.icon = icon;
+    button.heading = warning;
+    button.enabled = YES;
     return panel;
 }
 /* Stands in for a stored token in the token field, which shows it as dots;
