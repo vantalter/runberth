@@ -714,8 +714,9 @@ static NSString *shortTitle(NSString *title) {
     self.succeeded = ok;
     NSArray *progress = [activity[@"progress"] isKindOfClass:NSArray.class] ? activity[@"progress"] : nil;
 
-    // Running: what it does. Ended: how, with why it failed beneath, from
-    // a result such as "Couldn't connect aerofoil: GitHub rejected it".
+    // Running: what it does. Ended: how, with the detail beneath, from a
+    // result such as "Couldn't connect aerofoil: GitHub rejected it" or
+    // "Connected: Runberth 0.2.5, 2 repositories".
     NSString *title = activity[@"title"] ?: @"", *reason = @"";
     if (!running) {
         NSString *result = activity[@"result"] ?: @"";
@@ -748,7 +749,8 @@ static NSString *shortTitle(NSString *title) {
 
     // The steps finished fill the bar: on the third of seven, two sevenths,
     // so it is never full before the work reports it is done. Work that
-    // numbers no steps shows only its title; a failure, its reason.
+    // numbers no steps shows only its title; ended work, the detail after
+    // its result's colon: a failure's reason in red, a success's in grey.
     BOOL stepped = running && progress;
     self.bar.hidden = !stepped;
     self.stepCount.hidden = !stepped;
@@ -760,7 +762,7 @@ static NSString *shortTitle(NSString *title) {
         self.stepCount.stringValue = [NSString stringWithFormat:@"Step %@ of %@", progress[0], progress[1]];
     } else {
         self.stepName.stringValue = reason;
-        self.stepName.textColor = appRed();
+        self.stepName.textColor = ok ? NSColor.secondaryLabelColor : appRed();
     }
     self.stepName.toolTip = self.stepName.stringValue.length ? self.stepName.stringValue : nil;
     self.progress.hidden = !stepped && reason.length == 0;
