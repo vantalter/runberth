@@ -217,18 +217,14 @@ static NSTextField *statusLine(CGFloat width) {
     return label;
 }
 
-/* The Settings window's signal colours: red for destructive buttons and
- * the warning icon, and a darker red that reads as text for errors. The
- * Activity window uses the system's semantic colours, but for its green. */
+/* The app's signal colours: red (#FA9891) for destructive buttons,
+ * warnings, errors, and failed work. */
 static NSColor *appRed(void) {
-    return [NSColor colorWithSRGBRed:254 / 255.0 green:142 / 255.0 blue:136 / 255.0 alpha:1];
+    return [NSColor colorWithSRGBRed:250 / 255.0 green:152 / 255.0 blue:145 / 255.0 alpha:1];
 }
-static NSColor *appError(void) {
-    return [NSColor colorWithSRGBRed:195 / 255.0 green:0 blue:0 alpha:1];
-}
-/* Green for work that ended well and output still arriving. */
+/* Green (#ADE392) for work that ended well and output still arriving. */
 static NSColor *successGreen(void) {
-    return [NSColor colorWithSRGBRed:102 / 255.0 green:211 / 255.0 blue:87 / 255.0 alpha:1];
+    return [NSColor colorWithSRGBRed:173 / 255.0 green:227 / 255.0 blue:146 / 255.0 alpha:1];
 }
 
 static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
@@ -241,7 +237,7 @@ static void setStatus(NSTextField *label, NSString *text, BOOL ok) {
     // A space keeps the line's height while it is empty.
     label.stringValue = text.length ? text : @" ";
     label.toolTip = text.length ? text : nil;
-    label.textColor = ok ? NSColor.secondaryLabelColor : appError();
+    label.textColor = ok ? NSColor.secondaryLabelColor : appRed();
 }
 
 /* The Activity window: an entry for each piece of work, running or
@@ -626,7 +622,7 @@ static NSString *shortTitle(NSString *title) {
     NSString *status;
     if (self.ended) {
         status = self.succeeded ? @"Completed" : @"Failed";
-        dot = self.succeeded ? successGreen() : NSColor.systemRedColor;
+        dot = self.succeeded ? successGreen() : appRed();
     } else if (!self.heard) {
         status = @"Waiting for output";
     } else if (now - self.heard.longValue < 5) {
@@ -682,7 +678,7 @@ static NSString *shortTitle(NSString *title) {
         } else if ([line hasPrefix:@"Recommendation"]) {
             color = adviceColor();
         } else if ([lower hasPrefix:@"error"] || [line hasPrefix:@"✗"]) {
-            color = NSColor.systemRedColor;
+            color = appRed();
         }
         NSString *piece = [NSString stringWithFormat:@"%@%@", text.length ? @"\n" : @"", line];
         [text appendAttributedString:[[NSAttributedString alloc]
@@ -699,7 +695,7 @@ static NSString *shortTitle(NSString *title) {
                                          initWithString:piece
                                              attributes:@{
                                                  NSFontAttributeName : [NSFont monospacedSystemFontOfSize:size weight:NSFontWeightSemibold],
-                                                 NSForegroundColorAttributeName : ok ? successGreen() : NSColor.systemRedColor,
+                                                 NSForegroundColorAttributeName : ok ? successGreen() : appRed(),
                                                  NSParagraphStyleAttributeName : plain,
                                              }]];
     }
@@ -747,7 +743,7 @@ static NSString *shortTitle(NSString *title) {
     if (!running) {
         self.icon.image = [NSImage imageWithSystemSymbolName:ok ? @"checkmark.circle.fill" : @"xmark.circle.fill"
                                     accessibilityDescription:ok ? @"Done" : @"Failed"];
-        self.icon.contentTintColor = ok ? successGreen() : NSColor.systemRedColor;
+        self.icon.contentTintColor = ok ? successGreen() : appRed();
     }
 
     // The steps finished fill the bar: on the third of seven, two sevenths,
@@ -764,7 +760,7 @@ static NSString *shortTitle(NSString *title) {
         self.stepCount.stringValue = [NSString stringWithFormat:@"Step %@ of %@", progress[0], progress[1]];
     } else {
         self.stepName.stringValue = reason;
-        self.stepName.textColor = NSColor.systemRedColor;
+        self.stepName.textColor = appRed();
     }
     self.stepName.toolTip = self.stepName.stringValue.length ? self.stepName.stringValue : nil;
     self.progress.hidden = !stepped && reason.length == 0;
