@@ -30,6 +30,8 @@ pub enum Action {
     Report,
     /// Open an activity's whole output in the text editor.
     ShowOutput(u64),
+    /// macOS: the Activity window, with the work's steps and its output.
+    ShowActivity(u64),
     Quit,
 }
 
@@ -302,14 +304,19 @@ pub fn build(view: &View) -> (Value, HashMap<u32, Action>) {
     let mut items = Vec::new();
     let status = view.server.as_ref().and_then(|server| server.as_ref().ok());
     // Work in progress and recent results, above everything, in the same
-    // words as Settings' status bar.
+    // words as the Activity window.
     for activity in &view.activities {
         for line in activity.menu_lines(view.now) {
             items.push(builder.info(short_line(&line)));
         }
-        // Everything the work printed, not only its latest line.
+        // Its steps and everything it printed, not only its latest line;
+        // Linux, with no Activity window, opens the output.
         if activity.has_output() {
-            items.push(builder.item("Show Output", Action::ShowOutput(activity.id)));
+            items.push(if cfg!(target_os = "macos") {
+                builder.item("Show Details…", Action::ShowActivity(activity.id))
+            } else {
+                builder.item("Show Output", Action::ShowOutput(activity.id))
+            });
         }
     }
     if !view.activities.is_empty() {
@@ -703,6 +710,9 @@ mod tests {
             repo: Some(repo.into()),
             verb: verb.into(),
             output: vec![],
+            progress: None,
+            target: String::new(),
+            heard: None,
         };
         busy.activities = vec![
             activity(1, "o/r", "Disconnecting", "Disconnecting r", ""),
@@ -841,6 +851,9 @@ mod tests {
             repo: None,
             verb: String::new(),
             output: vec![],
+            progress: None,
+            target: String::new(),
+            heard: None,
         }];
         let (menu, _) = build(&cleaning);
         // A server without Runberth still spins while work runs on it.

@@ -213,6 +213,8 @@
 					"-framework",
 					UserNotifications,
 					"-framework",
+					QuartzCore,
+					"-framework",
 					ServiceManagement,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.runberth.app;
@@ -245,6 +247,8 @@
 					AppKit,
 					"-framework",
 					UserNotifications,
+					"-framework",
+					QuartzCore,
 					"-framework",
 					ServiceManagement,
 				);

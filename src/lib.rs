@@ -18,6 +18,7 @@ pub mod packages;
 pub mod paths;
 pub mod preflight;
 pub mod probe;
+pub mod progress;
 pub mod registry;
 pub mod runner;
 pub mod status;

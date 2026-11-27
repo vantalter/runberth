@@ -167,12 +167,25 @@ fn perform(action: Action) {
         Action::UpdateServer => in_background(|| install_in_app(&["update".to_owned()])),
         Action::Report => report_problem(),
         Action::ShowOutput(id) => show_output(id),
+        Action::ShowActivity(id) => native::show_activity(id),
         Action::Disconnect(repo) => start_operation("disconnect", repo),
-        Action::Quit => {
-            wake(Wake::Stop);
-            unsafe { native::native_stop() }
+        // Quitting mid-install or mid-cleanup could leave the server half
+        // done, so macOS asks first; Linux has no dialog to ask with.
+        Action::Quit if cfg!(target_os = "macos") && activity::any_running() => {
+            let running: Vec<String> = activity::current()
+                .iter()
+                .filter(|activity| activity.running())
+                .map(|activity| activity.title.clone())
+                .collect();
+            native::confirm_quit(&running.join("\n"));
         }
+        Action::Quit => quit(),
     }
+}
+
+fn quit() {
+    wake(Wake::Stop);
+    unsafe { native::native_stop() }
 }
 
 /// # Safety
@@ -210,6 +223,9 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         }
         "menu-opened" => wake(Wake::MenuOpened),
         "quit" => perform(Action::Quit),
+        // Confirmed despite running work, or asked by the system, as at
+        // logout, which nothing should hold up.
+        "quit-now" => quit(),
         "open-settings" => show_settings(),
         "settings-change" => change_settings(&value),
         "settings-test" => test_connection(),
@@ -220,12 +236,6 @@ pub unsafe extern "C" fn runberth_app_event(kind: *const c_char, value: *const c
         "token-remove" => in_background(|| token_status(token::remove().map(|()| "Token removed"))),
         "token-check" => in_background(|| native::settings_status(&token_check().to_string())),
         "report" => report_problem(),
-        // The Settings status bar's line, clicked: {"id"}.
-        "show-output" => {
-            if let Ok(id) = value.parse() {
-                show_output(id);
-            }
-        }
         // Work the native side did itself, such as installing the command
         // line tool: {"key", "title", "ok", "result"}.
         "activity-record" => {
@@ -294,7 +304,7 @@ impl News {
     }
 
     /// All announces everything; Failures and fixes only what went wrong;
-    /// Off nothing, as the menu and the Settings status bar say it all.
+    /// Off nothing, as the menu and the Activity window say it all.
     fn wanted(self, choice: config::Notifications) -> bool {
         match choice {
             config::Notifications::All => true,
@@ -314,18 +324,22 @@ fn announce(news: News, title: &str, body: &str, url: &str) {
     }
 }
 
-/// Shows the activities' change: the menu redraws, and Settings gets them
-/// for its status bar.
+/// Shows the activities' change: the menu redraws, and the native side
+/// gets them for the Activity window and Settings' buttons.
 fn activities_changed() {
     wake(Wake::Redraw);
     activities_to_settings();
 }
 
-/// The lines for Settings' status bar, worded and timed here as in the
-/// menu: {"key", "running", "ok", "line"} each, the newest last.
+/// The activities for the Activity window, worded and timed here as in
+/// the menu, the newest last.
 fn activities_to_settings() {
     native::settings_status(&json!({"activities": activity_lines()}).to_string());
 }
+
+/// The output lines an Activity window card shows; Show Output in the
+/// text editor has them all.
+const TAIL: usize = 300;
 
 fn activity_lines() -> Vec<serde_json::Value> {
     let now = runs::now();
@@ -339,6 +353,18 @@ fn activity_lines() -> Vec<serde_json::Value> {
                 "ok": activity.ok,
                 "line": activity.line(now),
                 "output": activity.has_output(),
+                "progress": activity.progress.map(|(number, total)| [number, total]),
+                // For the Activity window's cards.
+                "title": activity.title,
+                "step": activity.step,
+                "result": activity.result,
+                // Seconds since the epoch: the window ticks its own clock.
+                "started": activity.started,
+                "finished": activity.finished,
+                "target": activity.target,
+                "heard": activity.heard,
+                // Its latest output, which the card's details show.
+                "tail": activity.output[activity.output.len().saturating_sub(TAIL)..].join("\n"),
             })
         })
         .collect()

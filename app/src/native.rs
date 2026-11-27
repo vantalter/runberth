@@ -16,6 +16,8 @@ unsafe extern "C" {
     pub fn native_set_update_checks(enabled: c_int);
     fn native_show_settings(window_json: *const c_char);
     fn native_settings_status(status_json: *const c_char);
+    fn native_show_activity(id: u64);
+    fn native_confirm_quit(running: *const c_char);
     pub fn native_check_updates();
 }
 
@@ -46,6 +48,19 @@ pub fn show_settings(json: &str) {
 pub fn settings_status(json: &str) {
     let json = cstring(json);
     unsafe { native_settings_status(json.as_ptr()) }
+}
+
+/// Thread-safe: opens the Activity window at one activity's card; macOS
+/// only, as Linux has no window.
+pub fn show_activity(id: u64) {
+    unsafe { native_show_activity(id) }
+}
+
+/// macOS: asks whether to quit while `running` work, one title a line,
+/// goes on; "quit-now" comes back if so.
+pub fn confirm_quit(running: &str) {
+    let running = cstring(running);
+    unsafe { native_confirm_quit(running.as_ptr()) }
 }
 
 /// Thread-safe, like `set_menu`.
