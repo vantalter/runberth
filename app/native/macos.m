@@ -1020,10 +1020,6 @@ static ActivityWindow *activityWindow(void) {
 @property NSButton *cleanupButton;
 /* Whether an install or a cleanup runs, which keeps its button off. */
 @property BOOL installRunning, cleanupRunning;
-/* In the cleanup dialog: the host typed to confirm, and the button it enables. */
-@property NSTextField *confirmField;
-@property NSButton *confirmButton;
-@property NSAlert *confirmAlert;
 /* A settings error, such as a host that is not one, under the Server
  * form until an edit fixes it. */
 @property NSTextField *errorLine;
@@ -1556,65 +1552,84 @@ static NSString *shellQuoted(NSString *path) {
 /* Shows the server's dry-run plan and removes everything only on a second,
  * explicit choice: cleanup cannot be undone. */
 - (void)confirmCleanup:(NSString *)plan {
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.alertStyle = NSAlertStyleCritical;
-    alert.messageText = @"Remove Runberth from the server?";
-    alert.informativeText = @"Cleanup removes everything in this plan, including each runner's GitHub "
-                            @"registration. It cannot be undone. Change the repositories' runs-on first.";
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 460, 150)];
-    scroll.hasVerticalScroller = YES;
+    // A sheet of its own rather than an alert: an alert centres its icon
+    // above the text and stacks its buttons when narrow.
+    // The same red mark as the cleanup panel on the Server tab.
+    NSImageView *icon = [NSImageView
+        imageViewWithImage:[NSImage imageWithSystemSymbolName:@"exclamationmark.circle.fill"
+                                     accessibilityDescription:@"Warning"]];
+    icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:28
+                                                                               weight:NSFontWeightSemibold];
+    icon.contentTintColor = appRed();
+    NSTextField *title = [NSTextField labelWithString:@"Remove Runberth from the server?"];
+    title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightBold];
+    NSStackView *heading = row(@[ icon, title ]);
+    heading.spacing = 10;
+    heading.alignment = NSLayoutAttributeCenterY;
+
+    NSTextField *message = [NSTextField
+        wrappingLabelWithString:@"Cleanup removes everything in this plan, including each runner's GitHub "
+                                @"registration. It cannot be undone. Change the repositories' runs-on first."];
+    message.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+    message.preferredMaxLayoutWidth = 460;
+
+    // The server's own plan, as `runberth cleanup` prints it.
+    NSScrollView *scroll = [NSTextView scrollableTextView];
     scroll.borderType = NSBezelBorder;
-    NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.contentView.bounds];
+    NSTextView *text = scroll.documentView;
     text.editable = NO;
     text.font = [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightRegular];
     text.string = plan;
-    text.autoresizingMask = NSViewWidthSizable;
-    scroll.documentView = text;
-    // As GitHub asks for a repository's name, the server's address confirms.
-    NSString *host = [self.host.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-    NSTextField *ask = [NSTextField wrappingLabelWithString:
-        [NSString stringWithFormat:@"To confirm, type %@ below:", host]];
-    ask.preferredMaxLayoutWidth = 460;
-    self.confirmField = [NSTextField textFieldWithString:@""];
-    self.confirmField.placeholderString = host;
-    self.confirmField.delegate = self;
-    [self.confirmField.widthAnchor constraintEqualToConstant:460].active = YES;
-    // Remove Everything is an ordinary button in the dialog's content: an
-    // alert draws its own buttons in fixed colours, and this one turns red
-    // once the host is typed.
-    self.confirmButton = pushButton(@"Remove Everything", self, @selector(confirmRemoval:));
-    // The size of the alert's own Cancel below it.
-    self.confirmButton.controlSize = NSControlSizeLarge;
-    [self.confirmButton.widthAnchor constraintEqualToConstant:228].active = YES;
-    [self armConfirmButton:NO];
-    NSStackView *accessory = column(@[ scroll, ask, self.confirmField, self.confirmButton ]);
-    accessory.spacing = 8;
-    [accessory setCustomSpacing:16 afterView:self.confirmField];
-    [self.confirmButton.centerXAnchor constraintEqualToAnchor:accessory.centerXAnchor].active = YES;
-    [scroll.widthAnchor constraintEqualToConstant:460].active = YES;
-    [scroll.heightAnchor constraintEqualToConstant:150].active = YES;
-    accessory.frame = NSMakeRect(0, 0, 460, accessory.fittingSize.height);
-    alert.accessoryView = accessory;
-    self.confirmField.toolTip = host;
-    // The alert's own button: Escape cancels, and Return confirms nothing.
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];
+    text.textContainerInset = NSMakeSize(4, 6);
+
+    // Side by side at the right: Cancel, which Escape chooses, and Remove
+    // Everything in red, which Return never chooses.
+    NSButton *cancel = pushButton(@"Cancel", self, @selector(endCleanupSheet:));
+    cancel.tag = NSModalResponseCancel;
     cancel.keyEquivalent = @"\033";
-    self.confirmAlert = alert;
-    [alert layout];
-    [alert.window makeFirstResponder:self.confirmField];
-    [alert beginSheetModalForWindow:self.window
-                  completionHandler:^(NSModalResponse response) {
-                    self.confirmField = nil;
-                    self.confirmButton = nil;
-                    self.confirmAlert = nil;
-                    if (response == NSModalResponseOK) {
-                        self.cleanupButton.enabled = NO;
-                        activityWindow().awaited = @"cleanup";
-                        emit(@"cleanup-execute", @"");
-                    } else {
-                        self.cleanupButton.enabled = YES;
-                    }
-                  }];
+    NSButton *remove = pushButton(@"Remove Everything", self, @selector(endCleanupSheet:));
+    remove.tag = NSModalResponseOK;
+    remove.hasDestructiveAction = YES;
+    remove.bezelColor = appRed();
+    remove.attributedTitle = [[NSAttributedString alloc]
+        initWithString:remove.title
+            attributes:@{NSForegroundColorAttributeName : NSColor.whiteColor, NSFontAttributeName : remove.font}];
+    NSView *gap = [[NSView alloc] init];
+    [gap setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *buttons = row(@[ gap, cancel, remove ]);
+    buttons.spacing = 10;
+
+    NSStackView *content = column(@[ heading, message, scroll, buttons ]);
+    content.spacing = 12;
+    [content setCustomSpacing:20 afterView:scroll];
+    content.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
+    [NSLayoutConstraint activateConstraints:@[
+        [message.widthAnchor constraintEqualToConstant:460],
+        [scroll.widthAnchor constraintEqualToConstant:460],
+        [scroll.heightAnchor constraintEqualToConstant:150],
+        [buttons.widthAnchor constraintEqualToConstant:460],
+    ]];
+
+    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSZeroRect
+                                                  styleMask:NSWindowStyleMaskTitled
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
+    sheet.contentView = content;
+    [sheet setContentSize:content.fittingSize];
+    [self.window beginSheet:sheet
+          completionHandler:^(NSModalResponse response) {
+            if (response == NSModalResponseOK) {
+                self.cleanupButton.enabled = NO;
+                activityWindow().awaited = @"cleanup";
+                emit(@"cleanup-execute", @"");
+            } else {
+                self.cleanupButton.enabled = YES;
+            }
+          }];
+    [sheet makeFirstResponder:cancel];
+}
+- (void)endCleanupSheet:(NSButton *)sender {
+    [self.window endSheet:sender.window returnCode:sender.tag];
 }
 /* The options for `runberth install`, which the app then runs, showing its
  * steps under Test Connection; when sudo on the server asks for a password,
@@ -1672,22 +1687,6 @@ static NSString *shellQuoted(NSString *path) {
                     activityWindow().awaited = @"install";
                     emit(@"install-server", [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
                   }];
-}
-/* Remove Everything is a plain, greyed-out button until the host is typed,
- * then red with white text, as the Clean Up… button that opened it. */
-/* Remove Everything, enabled only once the typed host matches. */
-- (void)confirmRemoval:(id)sender {
-    [self.window endSheet:self.confirmAlert.window returnCode:NSModalResponseOK];
-}
-- (void)armConfirmButton:(BOOL)armed {
-    NSButton *button = self.confirmButton;
-    button.enabled = armed;
-    button.hasDestructiveAction = armed;
-    button.bezelColor = armed ? appRed() : nil;
-    NSDictionary *attributes = armed ? @{NSForegroundColorAttributeName : NSColor.whiteColor,
-                                         NSFontAttributeName : button.font}
-                                     : @{NSFontAttributeName : button.font};
-    button.attributedTitle = [[NSAttributedString alloc] initWithString:@"Remove Everything" attributes:attributes];
 }
 - (void)status:(NSDictionary *)state {
     if (state[@"error"]) {
@@ -1749,10 +1748,6 @@ static NSString *shellQuoted(NSString *path) {
     emit(@"settings-change", [self formJSON]);
 }
 - (void)controlTextDidChange:(NSNotification *)notification {
-    if (notification.object == self.confirmField) {
-        [self armConfirmButton:[self.confirmField.stringValue isEqualToString:self.confirmField.toolTip]];
-        return;
-    }
     if (notification.object == self.token) {
         // Typing over the stored token's dots starts a new token.
         NSString *typed = [self.token.stringValue stringByReplacingOccurrencesOfString:@"•" withString:@""];
