@@ -34,7 +34,7 @@ fn main() {
                 .flag("-mmacosx-version-min=12.0")
                 .file("native/macos.m")
                 .flag("-fobjc-arc");
-            for framework in ["AppKit", "ServiceManagement", "UserNotifications"] {
+            for framework in ["AppKit", "QuartzCore", "ServiceManagement", "UserNotifications"] {
                 println!("cargo:rustc-link-lib=framework={framework}");
             }
         }

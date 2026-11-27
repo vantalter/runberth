@@ -1,7 +1,7 @@
 //! Work the app does on its own or on request that takes a while, such as
 //! connecting a repository or cleaning up the server: one list, shown the
 //! same way everywhere. The tray spins while one runs, the menu shows each
-//! at its top, and Settings shows the latest in its status bar:
+//! at its top, and the Activity window on macOS shows a card for each:
 //!
 //!   Connecting aerofoil… 0:42 · Installing runner dependencies
 //!   ✓ Connected aerofoil · took 1:12
@@ -45,6 +45,18 @@ pub struct Activity {
     /// Step n of m, from the work's numbered lines, as `[3/7] Installing
     /// Runberth`; None from work that prints none, as an older server.
     pub progress: Option<(u8, u8)>,
+    /// The server it works on, as the menu names it: `ubuntu@203.0.113.10`.
+    pub target: String,
+    /// When it last printed a line, in seconds since the epoch.
+    pub heard: Option<i64>,
+}
+
+/// What a percentage counter line says before its number, as `(Reading
+/// database ... ` in `(Reading database ... 45%`; None for other lines.
+fn counter_prefix(line: &str) -> Option<&str> {
+    let number = line.trim_end().strip_suffix('%')?;
+    let prefix = number.trim_end_matches(|c: char| c.is_ascii_digit());
+    (prefix.len() < number.len() && !prefix.trim().is_empty()).then_some(prefix)
 }
 
 /// A numbered step line, as `[3/7] Installing Runberth`: 3, 7, and its name.
@@ -98,7 +110,7 @@ impl Activity {
         }
     }
 
-    /// One line, as the Settings status bar shows it.
+    /// One line, as the output's report ends with it.
     pub fn line(&self, now: i64) -> String {
         match self.finished {
             // The bar beside it shows how far it is.
@@ -158,13 +170,23 @@ impl Activities {
             verb: verb.to_owned(),
             output: Vec::new(),
             progress: None,
+            target: String::new(),
+            heard: None,
         });
         Some(self.next)
     }
 
     pub fn step(&mut self, id: u64, step: &str) {
         if let Some(activity) = self.list.iter_mut().find(|activity| activity.id == id) {
-            // The output keeps the line as it came.
+            // The output keeps the line as it came, except that a counter
+            // redrawn in place, as apt's `(Reading database ... 45%`,
+            // replaces its previous count rather than adding a line each time.
+            let redrawn = activity.output.last().is_some_and(|last| {
+                counter_prefix(last).is_some_and(|prefix| counter_prefix(step) == Some(prefix))
+            });
+            if redrawn {
+                activity.output.pop();
+            }
             activity.output.push(step.to_owned());
             if activity.output.len() > KEEP_OUTPUT {
                 activity.output.remove(0);
@@ -182,6 +204,10 @@ impl Activities {
             name.trim_end_matches(['.', ' ', '…'])
                 .clone_into(&mut activity.step);
         }
+    }
+
+    fn find_mut(&mut self, id: u64) -> Option<&mut Activity> {
+        self.list.iter_mut().find(|activity| activity.id == id)
     }
 
     pub fn finish(&mut self, id: u64, ok: bool, result: &str, now: i64) {
@@ -240,6 +266,9 @@ impl Handle {
     pub fn step(&self, step: &str) {
         if let Ok(mut activities) = ACTIVITIES.lock() {
             activities.step(self.0, step);
+            if let Some(activity) = activities.find_mut(self.0) {
+                activity.heard = Some(now());
+            }
         }
         changed();
     }
@@ -266,7 +295,18 @@ pub fn begin(key: &str, title: &str) -> Option<Handle> {
 
 /// Starts an activity that changes a repository.
 pub fn begin_for(key: &str, title: &str, repo: Option<&str>, verb: &str) -> Option<Handle> {
-    let id = ACTIVITIES.lock().ok()?.begin(key, title, repo, verb, now())?;
+    let id = {
+        let mut activities = ACTIVITIES.lock().ok()?;
+        let id = activities.begin(key, title, repo, verb, now())?;
+        // The server it works on, as set when it starts.
+        if let Some(activity) = activities.find_mut(id) {
+            activity.target = crate::config::load(&crate::config::settings_path())
+                .ok()
+                .and_then(|config| config.server().map(crate::config::Server::label))
+                .unwrap_or_default();
+        }
+        id
+    };
     changed();
     Some(Handle(id))
 }
@@ -387,6 +427,34 @@ mod tests {
             running.line(42),
             "Updating Runberth on the server · Downloading Runberth v0.2.5 (runberth-x86_64)"
         );
+    }
+
+    #[test]
+    fn a_counter_redrawn_in_place_keeps_one_line() {
+        let mut activities = Activities::default();
+        let id = activities.begin("cleanup", "Cleaning up", None, "", 0).unwrap();
+        for line in [
+            "Removing gcc",
+            "(Reading database ... 5%",
+            "(Reading database ... 45%",
+            "(Reading database ... 100%",
+            "Progress: 10%",
+            "Progress: 20%",
+            "Done",
+        ] {
+            activities.step(id, line);
+        }
+        assert_eq!(
+            activities.current(1)[0].output,
+            [
+                "Removing gcc",
+                "(Reading database ... 100%",
+                "Progress: 20%",
+                "Done"
+            ]
+        );
+        assert_eq!(counter_prefix("100%"), None, "a number alone is no counter");
+        assert_eq!(counter_prefix("[3/7] Installing"), None);
     }
 
     #[test]

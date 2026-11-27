@@ -53,3 +53,10 @@ void native_set_update_checks(int enabled);
  * "cleanup-preview", and "cleanup-execute" once the plan is confirmed. */
 void native_show_settings(const char *window_json);
 void native_settings_status(const char *status_json);
+/* The Activity window, macOS only: a card for each activity that
+ * native_settings_status's "activities" lists, with its steps. Opens it at
+ * the activity `id`; Linux does nothing. */
+void native_show_activity(unsigned long long id);
+/* macOS: asks before quitting while work runs, its titles one a line;
+ * reports "quit-now" if the user quits anyway. Linux does nothing. */
+void native_confirm_quit(const char *running);

@@ -570,4 +570,8 @@ void native_show_settings(const char *window_json) { (void)window_json; }
 
 void native_settings_status(const char *status_json) { (void)status_json; }
 
+void native_show_activity(unsigned long long id) { (void)id; }
+
+void native_confirm_quit(const char *running) { (void)running; }
+
 void native_check_updates(void) {}
